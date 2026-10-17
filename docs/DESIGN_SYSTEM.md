@@ -10,29 +10,29 @@ Maquette de référence : « Maquette — Agent décisionnel », artefact privé
 
 | Choix | Décision | Pourquoi |
 |---|---|---|
-| Palette | **Bleu ciel** (surfaces, graphiques), **azur** (boutons et liens, texte blanc lisible), **marine** (texte et fonds sombres), **jaune soleil** comme unique signal | Dans l'esprit du bleu de Wave, sans reprendre sa marque ; le ciel clair seul ne porte pas de texte blanc (contraste), d'où l'azur |
+| Palette | Bleus **mesurés par échantillonnage de pixels sur deux captures de l'interface Wave fournies par l'auteur** : cyan du logo `#1DC8FE`, bleu d'action `#2F6FED`, bleu de barre latérale `#2D5ECE` ; **marine** pour le texte ; **jaune soleil** comme unique signal | Fidélité à la couleur de marque sur les grandes surfaces ; le bleu des contrôles est un peu plus foncé (`#2A5FD4`) parce que `#2F6FED` tombe à 3,8 à 4,2:1 en texte sur fond teinté |
 | Photographie | Six photos de Dakar, Gorée, d'un marché et de pirogues de Saint-Louis, en bichromie bleue | La version précédente, sans image, faisait générique ; la photo ancre le produit dans son contexte |
 | Signature | La **chaîne de preuve** : pastilles reliées (table → filtre → période → opération) | Rend ENF6 visible sans exposer le SQL au décideur |
 | Moment mémorable | À l'accueil, un compteur à chiffres qui roule, un soulignement jaune soleil qui se trace sur une photo de Dakar en bichromie, une courbe qui se dessine, puis la chaîne qui se monte | Les trois premières secondes disent ce que fait le produit |
 | Hiérarchie | Chiffres clés très grands, texte courant sobre, code en mono | Contraste d'échelle fort |
 | Profondeur | Surfaces superposées (page, carte, panneau SQL), rayons de 14 à 38 px, ombres douces | Distingue réponse, données et trace technique |
-| Marque | Aucun logo, nom ni texte de Wave ou d'Anthropic ; le bleu ciel s'inspire de Wave **sans en reprendre un code officiel** (aucun n'est publié dans les sources consultées). Le back-office reprend la **structure** des consoles d'administration (navigation par groupes, tableaux avec filtres, tiroirs, barre d'enregistrement), pas leur habillage | Éviter toute confusion de marque |
+| Marque | Aucun logo, nom ni texte de Wave ou d'Anthropic (les captures de référence montrent une mascotte et un logotype qui ne sont pas repris) ; seuls les bleus sont mesurés. Aucun code officiel n'est publié dans les sources consultées : les valeurs viennent des captures de l'auteur. Le back-office reprend la **structure** des consoles d'administration (navigation par groupes, tableaux avec filtres, tiroirs, barre d'enregistrement), pas leur habillage | Éviter toute confusion de marque |
 | Thèmes | Clair et sombre conçus séparément, bascule dans l'interface | Pas d'inversion mécanique |
 
 ## 2. Jetons (variables CSS posées sur la racine de chaque composant)
 
 ```
 clair  = { ground:#F2F7FC card:#FFFFFF panel:#E4EEF8 line:#CFDDEC line2:#6F8CAA ink:#0B2545 soft:#41607F
-           brand:#0B2F5B brandInk:#EAF4FD brandSoft:#9FC6EA primary:#0B6CB8 primaryInk:#FFFFFF sky:#2FB4F0
-           saff:#FFC83D pos:#0C7356 neg:#B83A55 chip:#DCEBFA c1:#0B6CB8 c2:#FFC83D c3:#0E8C86 c4:#C2415D }
+           brand:#2D5ECE brandInk:#EAF4FD brandSoft:#E3EEFF primary:#2A5FD4 primaryInk:#FFFFFF sky:#1DC8FE
+           saff:#FFC83D pos:#0C7356 neg:#B83A55 chip:#E1EBFD c1:#2F6FED c2:#FFC83D c3:#0E8C86 c4:#C2415D }
 sombre = { ground:#071A33 card:#0E2A4D panel:#0A2140 line:#1F3F66 line2:#6E93BD ink:#EAF4FD soft:#9FC0E0
-           brand:#0F3A6B brandInk:#EAF4FD brandSoft:#A9CDEF primary:#5CC3FA primaryInk:#071A33 sky:#5CC3FA
-           saff:#FFD25E pos:#7FE0BC neg:#FF8FA5 chip:#12365F c1:#5CC3FA c2:#FFD25E c3:#4FD1C5 c4:#FF8FA5 }
+           brand:#17458F brandInk:#EAF4FD brandSoft:#B9D0FA primary:#6FA3FF primaryInk:#071A33 sky:#3DD3FF
+           saff:#FFD25E pos:#7FE0BC neg:#FF8FA5 chip:#12365F c1:#6FA3FF c2:#FFD25E c3:#4FD1C5 c4:#FF8FA5 }
 ```
 
 `saff` désigne le jaune soleil (nom conservé dans le code). Pour changer de bleu de marque, on remplace `primary`, `sky` et `brand` à un seul endroit par composant racine.
 
-Règles : jamais de couleur en dur dans un composant (sauf `#0B2545` sur fond jaune) ; `line` pour les séparateurs, **`line2` pour toute bordure de composant interactif** (≥ 3:1 dans les deux thèmes) ; texte sur fond jaune ou ciel toujours en `#0B2545`. Contrastes calculés (formule WCAG) : texte `ink` et `soft` ≥ 4,5:1 sur `ground`, `card` et `panel` ; blanc sur `primary` ≥ 4,5:1 ; `brandSoft` sur `brand` ≥ 4,5:1 ; `line2` sur `card` ≥ 3:1. Un bleu ciel clair ne porte pas de texte blanc : les boutons utilisent l'azur.
+Règles : jamais de couleur en dur dans un composant (sauf `#0B2545` sur fond jaune) ; `line` pour les séparateurs, **`line2` pour toute bordure de composant interactif** (≥ 3:1 dans les deux thèmes) ; texte sur fond jaune ou ciel toujours en `#0B2545`. Contrastes calculés (formule WCAG) : texte `ink` et `soft` ≥ 4,5:1 sur `ground`, `card` et `panel` ; blanc sur `primary` ≥ 4,5:1 ; `brandSoft` sur `brand` ≥ 4,5:1 ; `line2` sur `card` ≥ 3:1. Le cyan du logo (`#1DC8FE`) ne porte pas de texte blanc (1,9:1) : il sert aux surfaces et aux accents, avec du texte marine (7,9:1). Le bleu d'action exact `#2F6FED` donne 4,55:1 avec du blanc mais seulement 3,8 à 4,2:1 en texte sur fond teinté : les contrôles, liens et contours utilisent `primary` (`#2A5FD4`), et `#2F6FED` reste réservé aux aplats (`c1` : barres de graphique). Tous les couples ont été recalculés avec les valeurs ci-dessus : zéro échec dans les deux thèmes.
 
 ### Photographies
 
@@ -103,7 +103,7 @@ React + Vite + TypeScript, organisation par fonctionnalités (`conversation`, `d
 
 ## 8. À valider
 
-1. **Le code exact du bleu de Wave**, à fournir (kit presse ou échantillon du logo officiel) : la palette actuelle est une approximation du bleu ciel.
+1. **Origine des bleus** : mesurés sur des captures fournies par l'auteur, pas sur un kit de marque officiel. À confirmer avec le kit presse de Wave si le projet est présenté à Wave.
 2. Navigation restreinte du back-office pour l'analyste.
 3. Rendu réel des photos en bichromie (lisibilité du texte sur l'image), des animations d'accueil et de la version mobile, jamais encore vus dans un navigateur.
 4. Choix des segments de l'évaluation en thème clair (mélange de couleurs à vérifier visuellement).
