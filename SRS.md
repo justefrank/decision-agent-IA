@@ -2,7 +2,7 @@
 
 Version 3 · après relecture croisée (architecture, sécurité, base de données, évaluation) · 2026-10-17
 
-> Documents liés : [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md), [docs/AGENTIC_DESIGN.md](docs/AGENTIC_DESIGN.md).
+> Documents liés : [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md), [docs/AGENTIC_DESIGN.md](docs/AGENTIC_DESIGN.md), [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md), [docs/FEATURES_RESOURCES.md](docs/FEATURES_RESOURCES.md).
 > L'historique des changements est en section 14.
 
 ## 1. Contexte et objectifs
