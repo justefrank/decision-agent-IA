@@ -1,0 +1,11 @@
+flowchart LR
+  GEN["Générateur de données (graine, REFERENCE_DATE)"] --> DBT["dbt + tests"]
+  DBT --> REF["Références recalculées depuis les données"]
+  DEV["eval/dev.yaml (~30)"] --> RUN
+  TEST["eval/test.yaml (40, 5 exécutions max par jalon)"] --> RUN
+  RUN["make eval : module agent direct, cache absent, 3 passes"] --> CMP["compare.py : résultat exécuté et chiffre cité"]
+  REF --> CMP
+  CMP --> STAT["Wilson 95 % + comptes bruts par catégorie"]
+  STAT --> ABL["Ablations : sans exemples, sans get_kpi, sans validateur, modèle seul"]
+  STAT --> BO["eval_run / eval_result : back-office Évaluation"]
+  FB["Signalements validés"] -- "jamais vers le test" --> DEV

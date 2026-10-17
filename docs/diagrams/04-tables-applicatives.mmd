@@ -1,0 +1,84 @@
+erDiagram
+  conversation ||--o{ message : contient
+  message ||--o{ feedback : "signalée par"
+  conversation ||--o{ query_log : trace
+  eval_run ||--o{ eval_result : détaille
+  conversation {
+    uuid id PK
+    text user_id "claim sub"
+    text title
+    timestamptz created_at
+  }
+  message {
+    uuid id PK
+    uuid conversation_id FK
+    text role
+    text content
+    jsonb structured_json
+    timestamptz created_at
+  }
+  query_log {
+    bigint id PK
+    text trace_id
+    int step
+    int attempt
+    text user_id
+    text tool
+    text sql
+    int row_count
+    bool truncated
+    int duration_ms
+    text status "ok error blocked"
+    numeric cost_usd
+    text prompt_version
+    text semantic_version
+    text model_id
+  }
+  feedback {
+    bigint id PK
+    uuid message_id FK
+    text category
+    bool consent_question
+    text status
+    bool promoted_to_dev
+  }
+  change_request {
+    bigint id PK
+    text kind "kpi semantic settings"
+    text author_id
+    text reviewer_id
+    text status
+    text diff_text
+    text commit_sha
+  }
+  eval_run {
+    bigint id PK
+    text split "dev test"
+    text prompt_version
+    text semantic_version
+    text model_id
+    text git_sha
+    int n
+    int n_correct
+    numeric ci_low
+    numeric ci_high
+  }
+  eval_result {
+    bigint run_id FK
+    text question_id
+    text category
+    int passes
+  }
+  audit_access_log {
+    bigint id PK
+    text admin_id
+    text action
+    text target_trace_id
+  }
+  analysis {
+    bigint id PK
+    text period
+    text region
+    text semantic_version
+    jsonb payload
+  }

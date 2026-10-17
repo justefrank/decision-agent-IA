@@ -1,0 +1,25 @@
+flowchart LR
+  subgraph Client
+    UI["Web React + Vite"]
+  end
+  KC["Keycloak OIDC"]
+  subgraph API["API FastAPI (un processus)"]
+    R["Routes + auth JWT"]
+    AG["Agent"]
+    MCP["Serveur MCP (sous-processus stdio)"]
+  end
+  subgraph PG["Postgres 16"]
+    RAW["schéma raw"]
+    ANA["schéma analytics"]
+    APP["schéma app"]
+  end
+  GEN["Générateur Python"] --> RAW
+  RAW -- "dbt (dbt_owner)" --> ANA
+  UI -- "Code + PKCE" --> KC
+  UI -- "Bearer JWT, fetch + flux" --> R
+  R -- JWKS --> KC
+  R --> AG
+  AG -- outils --> MCP
+  MCP -- "agent_ro (lecture)" --> ANA
+  R -- "app_rw" --> APP
+  AG <--> LLM["API LLM externe"]

@@ -1,0 +1,13 @@
+flowchart TD
+  S["SQL proposé par l'agent"] --> P{"Un seul SELECT ?"}
+  P -- non --> X["Refus (status = blocked)"]
+  P -- oui --> T{"Tables autorisées, qualifiées ?"}
+  T -- non --> X
+  T -- oui --> F{"Fonctions dans la liste fermée ?"}
+  F -- non --> X
+  F -- oui --> LI["LIMIT imposé sur l'AST"]
+  LI --> E{"EXPLAIN : coût et jointures bornés ?"}
+  E -- non --> X
+  E -- oui --> R["Réécriture du SQL depuis l'AST validé"]
+  R --> DB[("Postgres, rôle agent_ro, lecture seule, 10 s")]
+  DB --> N["Erreurs normalisées, résultats lus en flux"]

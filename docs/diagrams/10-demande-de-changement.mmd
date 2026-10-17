@@ -1,0 +1,9 @@
+stateDiagram-v2
+  [*] --> brouillon
+  brouillon --> en_revue: soumettre (validations automatiques)
+  en_revue --> brouillon: validations échouées
+  en_revue --> valide: relecteur différent de l'auteur
+  en_revue --> rejete: relecteur
+  valide --> applique: commit (sha enregistré)
+  rejete --> [*]
+  applique --> [*]

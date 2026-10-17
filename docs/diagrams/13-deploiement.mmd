@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph H["Hôte : docker compose"]
+    web["web (React, CSP stricte)"]
+    api["api (FastAPI + agent + MCP)"]
+    kc["keycloak (realm versionné)"]
+    pg[("postgres : raw / analytics / app")]
+  end
+  user(("Navigateur")) --> web
+  user --> kc
+  web --> api
+  api --> kc
+  api --> pg
+  api --> llm["API LLM externe"]
+  seed["make seed : générateur, chargement, dbt"] --> pg
+  ev["make eval"] --> api

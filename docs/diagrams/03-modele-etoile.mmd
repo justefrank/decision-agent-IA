@@ -1,0 +1,48 @@
+erDiagram
+  dim_client ||--o{ fact_transaction : "client_id"
+  dim_agent ||--o{ fact_transaction : "agent_id (-1 = hors agent)"
+  dim_region ||--o{ dim_client : "region_client_id"
+  dim_region ||--o{ dim_agent : "region_agent_id"
+  dim_date ||--o{ fact_transaction : "date_id"
+  fact_transaction {
+    bigint transaction_id PK
+    int client_id FK
+    int agent_id FK
+    int region_client_id FK
+    int region_agent_id FK
+    int date_id FK
+    timestamptz txn_ts
+    text type "depot retrait transfert paiement"
+    numeric montant_xof
+    numeric frais_xof
+    text statut "reussie echouee"
+  }
+  dim_client {
+    int client_id PK
+    date date_inscription
+    int region_client_id FK
+    text segment
+  }
+  dim_agent {
+    int agent_id PK
+    text nom
+    text ville
+    int region_agent_id FK
+    date date_activation
+    text statut_agent
+  }
+  dim_region {
+    int region_id PK
+    text region
+    text pays
+  }
+  dim_date {
+    int date_id PK
+    date date
+    int semaine_iso
+    int mois
+    int trimestre
+    int annee
+    bool est_weekend
+    bool jour_ferie
+  }

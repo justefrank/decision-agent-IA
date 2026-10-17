@@ -1,0 +1,20 @@
+sequenceDiagram
+  actor D as Décideur
+  participant W as Web React
+  participant A as API
+  participant G as Agent (mode analyse)
+  participant M as MCP
+  D->>W: choisit période et région
+  W->>A: GET /dashboard
+  A->>M: get_kpi x 6 (période courante et précédente)
+  M-->>A: valeurs
+  A-->>W: tuiles des KPI
+  W->>A: POST /dashboard/analysis
+  A->>G: valeurs + dérivés calculés par le code
+  Note over G: outil unique get_kpi, pas de SQL libre
+  G-->>A: lead, constats (3 max), questions
+  A->>A: validateur : chaque nombre a une source
+  A->>A: enregistre app.analysis (version sémantique)
+  A-->>W: constats avec confiance élevée, moyenne ou hypothèse
+  D->>W: clique une question d'approfondissement
+  W->>A: ouvre une conversation pré-remplie

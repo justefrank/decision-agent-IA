@@ -1,0 +1,20 @@
+sequenceDiagram
+  participant W as Web React
+  participant A as API
+  participant G as Agent
+  participant M as MCP (stdio)
+  participant D as Postgres
+  W->>A: POST /conversations/{id}/messages (Bearer)
+  A->>A: JWT, rôle, propriété (user_id = sub), quota
+  A->>G: question + état résolu + 6 derniers échanges
+  loop boucle d'outils (6 étapes max, 30 s)
+    G->>M: get_kpi / describe_table / run_query
+    M->>M: garde SQL (AST, liste blanche), EXPLAIN borné
+    M->>D: SELECT (agent_ro, 10 s)
+    D-->>M: lignes (1 001 max)
+    M-->>G: lignes, durée, truncated
+    A->>A: écrit query_log (étape, tentative)
+  end
+  G-->>A: AssistantMessage (validé)
+  A->>A: retire le SQL si rôle décideur
+  A-->>W: événements d'étape puis message final

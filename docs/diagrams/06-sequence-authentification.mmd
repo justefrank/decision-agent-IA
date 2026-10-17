@@ -1,0 +1,19 @@
+sequenceDiagram
+  actor U as Utilisateur
+  participant W as Web React
+  participant K as Keycloak
+  participant A as API
+  U->>W: ouvre l'application
+  W->>K: redirection Authorization Code + PKCE
+  K->>U: page de connexion (SSO ou e-mail + mot de passe)
+  U->>K: identifiants
+  K->>U: second facteur (MFA)
+  U->>K: code
+  K-->>W: code d'autorisation
+  W->>K: échange code + verifier
+  K-->>W: jeton d'accès (5 min, en mémoire)
+  W->>A: requête avec Bearer
+  A->>K: JWKS (en cache)
+  A->>A: vérifie iss, aud, exp, RS256, rôle
+  A-->>W: réponse
+  Note over W,A: 20 s avant l'expiration, avertissement et prolongation

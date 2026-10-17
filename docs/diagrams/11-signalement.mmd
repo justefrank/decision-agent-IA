@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> nouveau: l'utilisateur signale (RF10)
+  nouveau --> en_analyse: l'analyste reproduit
+  en_analyse --> corrige: correction livrée
+  en_analyse --> rejete: motif obligatoire
+  corrige --> dev_set: ajout au jeu de dev
+  rejete --> [*]
+  dev_set --> [*]
+  note right of dev_set
+    Jamais le jeu de test
+  end note

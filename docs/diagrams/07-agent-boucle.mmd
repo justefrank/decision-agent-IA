@@ -1,0 +1,13 @@
+flowchart TD
+  Q["Question + état résolu + historique"] --> L1["Tour 1 du modèle : intention"]
+  L1 -- refuse --> R["Refus motivé"]
+  L1 -- clarify --> C["Demande de précision"]
+  L1 -- answer --> L["Boucle d'outils"]
+  L -- get_kpi --> M[("MCP")]
+  L -- "describe_table / run_query" --> M
+  M --> G["Garde SQL + agent_ro"]
+  G --> L
+  L -- "erreur SQL, 2 corrections max" --> L
+  L --> F["Formateur : graphique et dérivés calculés par le code"]
+  F --> V["Validateur de sortie"]
+  V --> A["AssistantMessage + query_log écrit par l'API"]
