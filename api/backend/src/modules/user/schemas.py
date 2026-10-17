@@ -1,0 +1,196 @@
+from datetime import datetime
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from ...infrastructure.auth.password_policy import password_policy
+from ..common.schemas import PersistentDeletion, TimestampSchema
+from .constants import (
+    NAME_MAX_LENGTH,
+    USERNAME_MAX_LENGTH,
+    USERNAME_PATTERN,
+)
+
+
+class UserBase(BaseModel):
+    name: Annotated[str, Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userson"])]
+    username: Annotated[
+        str,
+        Field(min_length=2, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN, examples=["userson"]),
+    ]
+    email: Annotated[EmailStr, Field(examples=["user.userson@example.com"])]
+
+
+class User(TimestampSchema, UserBase, PersistentDeletion):
+    """Complete user model with all fields."""
+
+    hashed_password: str
+    is_superuser: bool = False
+    profile_image_url: Annotated[
+        str,
+        Field(
+            default="https://www.profileimageurl.com",
+            description="URL of the user's profile image",
+        ),
+    ]
+    tier_id: int | None = None
+
+    google_id: str | None = None
+    github_id: str | None = None
+    oauth_provider: str | None = None
+    email_verified: bool = False
+    oauth_created_at: datetime | None = None
+    oauth_updated_at: datetime | None = None
+
+
+class UserProfileRead(BaseModel):
+    """Another user's profile: the fields any signed-in user may see.
+
+    No email address, so looking someone up by username can't be used to collect
+    addresses. The owner reads their own record through ``/users/me``, and a
+    superuser through the list and active-and-inactive endpoints.
+    """
+
+    id: int
+    name: Annotated[str, Field(examples=["User Userson"])]
+    username: Annotated[str, Field(examples=["userson"])]
+    profile_image_url: str
+    tier_id: int | None = None
+
+
+class UserRead(BaseModel):
+    """Schema for reading user data, excludes sensitive information."""
+
+    id: int
+    name: Annotated[str, Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userson"])]
+    username: Annotated[
+        str,
+        Field(min_length=2, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN, examples=["userson"]),
+    ]
+    email: Annotated[EmailStr, Field(examples=["user.userson@example.com"])]
+    profile_image_url: str
+    is_deleted: bool = False
+    tier_id: int | None
+    is_superuser: bool = False
+    email_verified: bool = False
+    oauth_provider: str | None = None
+
+
+class UserCreate(UserBase):
+    """Schema for creating a new user.
+
+    Signing up never sets the OAuth identifiers or ``email_verified``: a self-declared
+    verified address would pre-claim it, and crudauth links a provider login to an
+    existing account by verified email. Those fields belong to
+    ``UserCreateInternal``, which only server-side code builds.
+    """
+
+    password: password_policy.body_field()  # type: ignore[valid-type]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UserCreateInternal(UserBase):
+    """Internal schema for user creation with hashed password."""
+
+    hashed_password: str
+    google_id: str | None = None
+    github_id: str | None = None
+    oauth_provider: str | None = None
+    email_verified: bool = False
+    oauth_created_at: datetime | None = None
+    oauth_updated_at: datetime | None = None
+
+
+class UserUpdate(BaseModel):
+    """Schema for updating user data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[
+        str | None,
+        Field(min_length=2, max_length=NAME_MAX_LENGTH, examples=["User Userberg"], default=None),
+    ]
+    username: Annotated[
+        str | None,
+        Field(
+            min_length=2,
+            max_length=USERNAME_MAX_LENGTH,
+            pattern=USERNAME_PATTERN,
+            examples=["userberg"],
+            default=None,
+        ),
+    ]
+    email: Annotated[EmailStr | None, Field(examples=["user.userberg@example.com"], default=None)]
+    profile_image_url: Annotated[
+        str | None,
+        Field(
+            pattern=r"^(https?|ftp)://[^\s/$.?#].[^\s]*$",
+            examples=["https://www.profileimageurl.com"],
+            default=None,
+        ),
+    ]
+
+
+class UserAdminUpdate(UserUpdate):
+    """Schema for updates only an administrator may make.
+
+    The OAuth identifiers and the verification flag decide who a provider login
+    resolves to, so they are not part of the public profile update.
+    """
+
+    google_id: str | None = None
+    github_id: str | None = None
+    oauth_provider: str | None = None
+    email_verified: bool | None = None
+    oauth_updated_at: datetime | None = None
+
+
+class UserUpdateInternal(UserAdminUpdate):
+    """Internal schema for user updates."""
+
+    updated_at: datetime
+
+
+class UserTierUpdate(BaseModel):
+    """Schema for updating a user's tier."""
+
+    tier_id: int
+
+
+class UserDelete(BaseModel):
+    """Schema for soft-deleting a user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_deleted: bool
+    deleted_at: datetime
+
+
+class UserAnonymize(BaseModel):
+    """Schema for GDPR/LGPD compliant user anonymization.
+
+    This schema includes all fields that need to be updated during
+    the user anonymization process for privacy compliance.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    username: str
+    hashed_password: str | None = None
+    profile_image_url: str | None = None
+    tier_id: int | None = None
+    is_superuser: bool = False
+    google_id: str | None = None
+    github_id: str | None = None
+    oauth_provider: str | None = None
+    email_verified: bool = False
+    oauth_created_at: datetime | None = None
+    oauth_updated_at: datetime | None = None
+
+
+class UserRestoreDeleted(BaseModel):
+    """Schema for restoring a deleted user."""
+
+    is_deleted: bool
