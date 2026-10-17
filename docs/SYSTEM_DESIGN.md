@@ -1,6 +1,6 @@
 # System Design
 
-Version 3 (après relecture croisée). Complète [SRS.md](../SRS.md). Pour l'agent, voir [AGENTIC_DESIGN.md](AGENTIC_DESIGN.md).
+Version 4 (back-office, authentification, analyse du tableau de bord). Complète [SRS.md](../SRS.md). Pour l'agent, voir [AGENTIC_DESIGN.md](AGENTIC_DESIGN.md).
 
 Principe directeur : **le moins de composants possible, chacun justifié par une exigence.**
 
@@ -47,7 +47,9 @@ Un serveur Postgres, trois schémas, trois rôles. Un monolithe FastAPI héberge
 | Agent | Boucle d'outils, sortie structurée | SDK du fournisseur LLM | RF1, RF2, RF14 |
 | API | JWT, conversations, relais vers l'agent, écriture de `query_log`, filtrage par rôle | FastAPI, Pydantic v2, SQLAlchemy | RF5, RF6, RF8, RF13, ENF5 |
 | Interface | Chat, graphiques, historique, KPI, vue SQL (analyste) | React, Vite, TypeScript, Recharts | RF3, RF4, ENF7 |
-| Identité | Utilisateurs, rôles, SSO | Keycloak | RF11, SRS §10 couche 1 |
+| Identité | Utilisateurs, rôles, SSO, MFA, verrouillage ; **pages d'authentification au thème du produit** (connexion, mot de passe oublié, réinitialisation, code à 6 chiffres, première connexion, compte verrouillé) ; API d'administration utilisée par le back-office via un compte de service limité | Keycloak, thème personnalisé | RF11, RF15, RF16, ENF10 |
+| Back-office | 9 vues sous `/admin` : vue d'ensemble, utilisateurs, catalogue de KPI, couche sémantique, journal d'audit, sécurité, évaluation, signalements, paramètres ; rôles vérifiés côté serveur | React (feature `admin`), routes API `/admin/*` | RF9, RF11 à RF13, RF18 à RF20, ENF11 |
+| Analyse du tableau de bord | Constats sourcés, niveaux de confiance, hypothèses étiquetées ; l'agent en mode analyse n'utilise que `get_kpi` | Agent, `GET /kpis/analysis` | RF17 |
 
 Le LLM est derrière une interface mince (`LLMClient`).
 
@@ -108,6 +110,23 @@ query_log(id, trace_id, step int, attempt int, ts timestamptz default now(), use
           prompt_version, semantic_version, model_id)
 ```
 
+Tables ajoutées pour le back-office et l'analyse :
+
+```
+feedback(id, ts, user_id, message_id → message, category, comment, consent_question bool,
+         status CHECK(nouveau|en_analyse|corrige|rejete), reject_reason, assignee, promoted_to_dev bool)
+change_request(id, kind CHECK(kpi|semantic|settings), target, author_id, reviewer_id,
+               status CHECK(brouillon|en_revue|valide|rejete|applique), diff_text,
+               created_at, decided_at, commit_sha)
+eval_run(id, ts, split CHECK(dev|test), prompt_version, semantic_version, model_id, git_sha,
+         data_hash, reference_date, n, n_correct, ci_low, ci_high, cache_off bool)
+eval_result(run_id, question_id, category, trap, passes int /* 0 à 3 */, expected, got)
+audit_access_log(id, ts, admin_id, action, target_trace_id)   -- ajout seul, comme query_log
+analysis(id, ts, period, region, semantic_version, model_id, payload jsonb, kpi_trace_id)
+```
+
+Les utilisateurs n'ont pas de table locale : Keycloak est la source unique (`user_id` = claim `sub`). Les fichiers `kpis.yaml`, `glossary.yaml`, `examples.yaml` et `config.yaml` restent la source de vérité ; `change_request` ne garde que le diff et la décision, l'application passe par un commit.
+
 Index : `conversation(user_id, created_at DESC)`, `message(conversation_id, created_at)`, `query_log(ts)`, `(user_id, ts)`, `(trace_id, step)`. Le texte de la question n'est pas stocké dans `query_log` (hash seulement) : il vit dans `message`, visible de son propriétaire. Rétention du journal : 90 jours (configurable).
 
 ### Modèle analytique
@@ -156,7 +175,17 @@ Le flux émet des **événements d'étape** (intention reconnue, outil en cours)
 | `GET /conversations/{id}` | Messages ; 404 si autrui | propriétaire |
 | `POST /conversations/{id}/messages` | Question (flux) | propriétaire |
 | `GET /kpis` | KPI du tableau de bord (Should) | authentifié |
-| `GET /audit/queries` | Champs techniques du journal (pas de texte de question) | analyste |
+| `GET /kpis/analysis?period=&region=` | Analyse de l'agent (mode analyse, `get_kpi` seul) | authentifié |
+| `POST /feedback` | Signaler une réponse (consentement explicite pour joindre la question) | propriétaire du message |
+| `GET /admin/overview?range=` | Requêtes, latence, coût, santé des composants | analyste, admin |
+| `GET /admin/users`, `POST /admin/users/invite`, `PATCH /admin/users/{id}`, `POST /admin/users/{id}/reset-mfa`, `DELETE /admin/users/{id}/sessions/{sid}` | Proxy vers l'API d'administration Keycloak ; ré-authentification récente exigée pour les actions sensibles | admin |
+| `GET /admin/kpis`, `GET /admin/semantic/{tables,glossary,examples}` | Lecture du catalogue et de la couche sémantique | analyste, admin |
+| `POST /admin/change-requests`, `POST /admin/change-requests/{id}/approve` | Soumission et validation (relecteur ≠ auteur) | analyste, admin |
+| `GET /admin/audit/queries`, `GET /admin/audit/queries/{trace_id}` | Journal technique et détail d'un appel ; chaque lecture du détail écrit `audit_access_log` | analyste, admin |
+| `GET /admin/security`, `POST /admin/security/rights-test` | Blocages, matrice de droits, test de droits de `agent_ro`, sessions | admin |
+| `GET /admin/eval/runs`, `POST /admin/eval/runs` | Historique et lancement (quota d'exécutions du jeu de test) | analyste, admin |
+| `GET /admin/feedback`, `PATCH /admin/feedback/{id}` | Signalements et leur traitement | analyste, admin |
+| `GET /admin/settings` | Paramètres courants ; tout changement passe par une demande de changement | admin |
 
 Contrat `AssistantMessage` (schéma Pydantic, types TypeScript générés) :
 
@@ -199,6 +228,14 @@ Jeu de sécurité (≥ 25 payloads nommés) : CTE modifiante, `pg_read_file`, `p
 ### Injection indirecte et rendu
 Résultats d'outils renvoyés en JSON typé, encadrés et marqués « données non fiables » ; colonnes de texte libre (`nom`, `ville`) exclues du contexte LLM sauf nécessité, tronquées et nettoyées ; rendu React en texte brut ou Markdown assaini (pas de HTML, d'images ni de liens externes) ; validateur de sortie (AGENTIC §6). L'agent ne peut modifier ni rôle ni périmètre d'un utilisateur.
 
+### Back-office et authentification
+- Les routes `/admin/*` vérifient le rôle **côté serveur** (claim du client attendu). La navigation masque les entrées interdites, mais c'est l'API qui refuse.
+- Le compte de service Keycloak ne gère que les utilisateurs et sessions du royaume (pas d'administration du royaume).
+- Actions sensibles (désactiver un compte, réinitialiser la MFA, révoquer une session, valider une demande de changement) : ré-authentification de moins de 5 min, puis journalisation.
+- Demandes de changement : le diff est calculé côté serveur sur les fichiers versionnés ; les validations automatiques (paramètres liés, tables autorisées, anti-fuite exemples/test) tournent avant la décision ; l'auteur ne peut pas valider ; l'application se fait par commit, jamais par écriture directe.
+- Le journal d'audit n'affiche jamais le texte d'une question (condensat seulement). Le détail d'un appel et l'export CSV écrivent `audit_access_log`.
+- Pages d'authentification : thème Keycloak sans logique propre ; messages neutres contre l'énumération de comptes ; limitation de débit ; aucun secret dans le thème. Session expirée : avertissement 20 s avant l'expiration du jeton, avec prolongation.
+
 ### Audit, secrets, exploitation
 - `query_log` en ajout seul, écrit par `app_rw` ; on y trace aussi refus du garde, échecs d'authentification et lectures de `/audit/queries` ; versions de prompt, de couche sémantique et de modèle incluses.
 - Filtre de masquage dans les journaux JSON (clés, jetons, en-têtes) ; secrets via secrets Docker, `.env` hors image ; scan de secrets en pré-commit et CI.
@@ -224,13 +261,13 @@ Un seul `docker compose` : `postgres`, `keycloak`, `api` (FastAPI + agent + MCP 
 decision-agent-IA/
 ├── SRS.md
 ├── docs/
-├── infra/        # compose, keycloak/realm.json (sans secret), postgres/init.sql
+├── infra/        # compose, keycloak/{realm.json (sans secret), theme/}, postgres/init.sql
 ├── data_gen/
 ├── warehouse/    # dbt
 ├── mcp_server/   # garde SQL + outils
 ├── agent/        # boucle, prompts, semantic/{tables,kpis,glossary,examples}.yaml
 ├── api/
-├── web/          # React + Vite, features/
+├── web/          # React + Vite, features/{conversation,dashboard,auth,admin}
 └── eval/         # dev.yaml, test.yaml, compare.py, rapports
 ```
 
@@ -247,3 +284,8 @@ decision-agent-IA/
 | S7 | `REFERENCE_DATE` partout | Reproductibilité | `now()` |
 | S8 | Pas de cache SQL | Mauvais contexte en suivi ; masque la variance de l'évaluation | Cache par question |
 | S9 | Trois rôles Postgres, droits par défaut explicites | `dbt run` recrée les tables ; moindre privilège | Un rôle unique |
+| S10 | Back-office dans la même application React (routes `/admin`) | Un déploiement, mêmes composants et jetons de design | Seconde application |
+| S11 | Changements de configuration par demandes de changement et commits versionnés | Revue obligatoire, historique Git, pas d'écriture directe | Édition en base |
+| S12 | Pages d'authentification en thème Keycloak | Aucun mot de passe ne transite par nos services | Pages maison avec API de connexion |
+| S13 | Utilisateurs lus et modifiés via l'API d'administration Keycloak, sans table locale | Source de vérité unique | Copie locale des utilisateurs |
+| S14 | Analyse du tableau de bord en lecture seule sur `get_kpi` | Chiffres traçables, pas de SQL libre | Analyse par SQL généré |

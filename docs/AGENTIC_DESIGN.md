@@ -1,6 +1,6 @@
 # Agentic System Design
 
-Version 3 (après relecture croisée). Complète [SRS.md](../SRS.md) §8-9 et [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
+Version 4 (mode analyse du tableau de bord, retours des utilisateurs). Complète [SRS.md](../SRS.md) §8-9 et [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md).
 
 Principe directeur : **un seul agent, des outils contraints, des garde-fous déterministes autour d'un modèle probabiliste.**
 
@@ -110,7 +110,7 @@ Contrat : `resolved_state {kpi, période, périmètre, filtres}` est inclus dans
 | Ablations | (a) modèle seul + schéma brut ; (b) sans exemples ; (c) sans `get_kpi` ; (d) sans validateur de sortie. Delta rapporté avec intervalle |
 | Traçabilité | Modèle (identifiant daté), température, hash des prompts, de la couche sémantique et des exemples, SHA git, graine et hash des données, `REFERENCE_DATE`, versions dbt et Postgres |
 | Métriques | Voir SRS §11 : justesse, cohérence, matrice d'intention, taux de repli, rejets du validateur, usage de `get_kpi`, erreurs période/périmètre, étapes, latence par étape, jetons et coût |
-| Anti-sur-ajustement | Itérations sur dev uniquement ; une exécution de test par jalon, journalisée ; les échecs du test ne sont analysés que par catégorie |
+| Anti-sur-ajustement | Itérations sur dev uniquement ; au plus 5 exécutions du test par jalon, journalisées dans `eval_run` et visibles dans le back-office ; les échecs du test ne sont analysés que par catégorie ; les signalements validés alimentent le dev, **jamais le test** |
 
 Une passe « cache chaud » n'existe plus (pas de cache) : la latence se mesure sur les 120 exécutions (40 × 3), en publiant p50, p90 et max (le p90 sur 40 questions repose sur peu d'observations).
 
@@ -127,6 +127,8 @@ Une passe « cache chaud » n'existe plus (pas de cache) : la latence se mesure 
 | Résultat tronqué cité comme total | Drapeau `truncated` | Interdiction de citer un total, mention dans la réponse |
 | Dépassement coût ou latence | Budgets, timeouts | Interruption et message clair |
 | LLM indisponible | Erreur réseau | Un nouvel essai, puis erreur explicite |
+| Analyse qui présente une hypothèse comme un fait | Validateur de l'analyse, évaluation dédiée | Étiquette « hypothèse » obligatoire pour toute cause ; constat rejeté sinon |
+| Analyse appuyée sur un chiffre non tracé | Contrôle de traçabilité (chaque nombre ↔ sortie de `get_kpi` ou dérivé calculé) | Constat supprimé, nouvel essai, puis analyse indisponible |
 
 ## 11. Coût et latence
 
@@ -140,7 +142,28 @@ Un `trace_id` par question, un enregistrement `query_log` par appel d'outil (`st
 
 Second avis ou critique seulement si la justesse plafonne sous O1 pour des erreurs de raisonnement ; récupération sémantique si le schéma dépasse le contexte ; mémoire long terme : non prévue.
 
-## 14. Décisions (ADR)
+## 14. Mode analyse du tableau de bord (RF17)
+
+Le tableau de bord affiche les KPI calculés par `get_kpi`, puis un bloc « Analyse de l'agent de données ». Ce mode est **plus contraint** que le chat.
+
+| Élément | Règle |
+|---|---|
+| Entrées | Période et région choisies ; les 6 KPI sur la période courante et la précédente, obtenus par `get_kpi` uniquement |
+| Outils | `get_kpi` seul. Pas de `run_query`, donc pas de SQL généré. Aucun texte libre issu de la base |
+| Sortie | `{ lead, constats[3 max], follow[] }` ; chaque constat : `tag` (Hausse, À surveiller, Écart, Écart favorable), `text`, `confidence`, `sources[]` (KPI, période, région) |
+| Traçabilité | Chaque nombre cité vient d'une sortie de `get_kpi` ou d'un dérivé calculé par le code (variation, écart en points). Le validateur rejette un constat dont un nombre n'a pas de source |
+| Confiance | **élevée** : valeur ou variation entre deux périodes, calcul direct ; **moyenne** : écart observé sur un seul mois ou sur un sous-ensemble régional ; **hypothèse** : toute explication causale ou tout rapprochement dont la cause n'est pas établie |
+| Phrase d'accroche | Contient uniquement des faits vérifiables ; aucune cause |
+| Approfondir | Les propositions ouvrent une conversation avec une question pré-remplie ; le calcul passe alors par le flux normal du chat |
+| Régénération | À la demande (« Régénérer l'analyse ») ; le résultat est conservé dans `app.analysis` avec la version de la couche sémantique ; il n'est pas réutilisé d'une période à l'autre |
+| Dégradation | Si `get_kpi` échoue, l'analyse est indisponible et les tuiles restent affichées |
+| Affichage | Étapes visibles pendant la génération (lecture des 6 indicateurs, comparaison avec la période précédente, recherche d'écarts par région) ; l'état de chaque étape est annoncé aux lecteurs d'écran |
+
+**Évaluation** : 12 cas de dev (3 périodes × 3 régions, plus données vide, KPI manquant, écart nul). Exigences : 100 % des nombres tracés ; 0 cause affirmée sans étiquette « hypothèse » ; mêmes constats chiffrés sur 3 passes (le texte peut varier). Le résultat figure dans le back-office, section Évaluation.
+
+**Retours des utilisateurs** : un signalement (RF10) conserve la réponse, le SQL et la chaîne de preuve ; la question n'est jointe qu'avec le consentement de l'utilisateur. L'analyste peut le reproduire, le rejeter avec un motif, ou l'**ajouter au jeu de dev**. Le jeu de test n'est jamais alimenté par les signalements.
+
+## 15. Décisions (ADR)
 
 | N° | Décision | Raison | Écarté |
 |---|---|---|---|
@@ -153,3 +176,5 @@ Second avis ou critique seulement si la justesse plafonne sous O1 pour des erreu
 | A7 | Évaluation écrite avant l'agent | Mesure objective | Évaluation finale seulement |
 | A8 | Pas de cache SQL | Contexte de suivi, variance visible | Cache par question |
 | A9 | Graphique et dérivés calculés par le code | Déterminisme, validation possible | Sortie libre du modèle |
+| A10 | Mode analyse limité à `get_kpi`, constats sourcés, hypothèses étiquetées | Un tableau de bord qui affirme une cause serait trompeur | Analyse libre par SQL généré |
+| A11 | Signalements vers le jeu de dev, jamais le test | Évite l'ajustement implicite sur le jeu d'acceptation | Alimenter les deux jeux |
