@@ -12,7 +12,7 @@ from decision_eval.antileak import ManifestError, freeze_manifest
 from decision_eval.compare import ResultSet
 from decision_eval.dataset import load_dataset
 from decision_eval.fakes import OracleAgent, oracle_factory
-from decision_eval.refs import StaticReferenceExecutor
+from decision_eval.refs import StaticReferenceExecutor, strip_limit
 from decision_eval.runner import EvalRunner, QuotaExceeded, RunConfig, compare_reports, security_checks
 
 SQL_VOL = (
@@ -465,3 +465,107 @@ def test_jsonable_decimal():
         "b": 0.5,
         "c": [1],
     }
+
+
+# ------------------------------------------------------------------ échelle des données et ex æquo
+
+
+class MetaExecutor(StaticReferenceExecutor):
+    def __init__(self, results, meta):
+        super().__init__(results)
+        self.meta = meta
+
+    def data_meta(self):
+        return self.meta
+
+
+SQL_ZERO = "SELECT COUNT(*) AS agents_fermes FROM analytics.dim_agent a WHERE a.statut_agent = 'ferme'"
+
+
+async def test_test_split_refuses_small_scale(tmp_path):
+    from decision_eval.runner import SmallScaleError
+
+    d = write_split(tmp_path, "test", ITEMS[:1], freeze=True)
+    ex = MetaExecutor(RESULTS, {"scale": "0.05", "seed": "42", "data_hash": "abc"})
+    runner, _ = make_runner(d, "test", passes=1, executor=ex)
+    with pytest.raises(SmallScaleError, match="0.05"):
+        await runner.run()
+    assert not (d / "reports" / "runs.json").exists()  # aucune exécution du quota consommée
+    runner, _ = make_runner(d, "test", passes=1, executor=ex, allow_small_scale=True)
+    rep = await runner.run()
+    t = rep["trace"]
+    assert t["data_scale"] == 0.05 and t["data_seed"] == "42" and t["small_scale_override"] is True
+    assert t["data_meta_source"] == "raw.raw_meta"
+    # à l'échelle d'évaluation : accepté sans dérogation
+    ex1 = MetaExecutor(RESULTS, {"scale": "1.0", "seed": "42"})
+    runner, _ = make_runner(d, "test", passes=1, executor=ex1)
+    assert (await runner.run())["trace"]["data_scale"] == 1.0
+
+
+async def test_test_split_refuses_degenerate_references(tmp_path):
+    from decision_eval.runner import SmallScaleError
+
+    item = {**ITEMS[0], "id": "Z1", "category": "clients_agents", "reference_sql": SQL_ZERO}
+    item.pop("expected_period")
+    item["notes"] = "Statut courant, sans période."
+    results = {**RESULTS, SQL_ZERO: ResultSet(["agents_fermes"], [(0,)])}
+    d = write_split(tmp_path, "test", [ITEMS[0], item], freeze=True)
+    runner, _ = make_runner(d, "test", passes=1, executor=StaticReferenceExecutor(results))
+    with pytest.raises(SmallScaleError, match="Z1"):
+        await runner.run()
+    runner, _ = make_runner(
+        d, "test", passes=1, executor=StaticReferenceExecutor(results), allow_small_scale=True
+    )
+    rep = await runner.run()
+    assert rep["degenerate_references"] == ["Z1 : uniquement des zéros"]
+    assert rep["trace"]["data_meta_source"].startswith("indisponible")
+    md = sorted((d / "reports").glob("*_test_none.md"))[-1].read_text()
+    assert "Références dégénérées" in md
+    # le dev n'est pas bloqué, mais la référence dégénérée est listée
+    (tmp_path / "dev").mkdir()
+    d2 = write_split(tmp_path / "dev", "dev", [item])
+    runner, _ = make_runner(d2, "dev", passes=1, executor=StaticReferenceExecutor(results))
+    assert (await runner.run())["degenerate_references"] == ["Z1 : uniquement des zéros"]
+
+
+SQL_TOP = (
+    "SELECT f.type, COUNT(*) AS n FROM analytics.fact_transaction f GROUP BY f.type "
+    "ORDER BY n DESC, f.type LIMIT 1"
+)
+SQL_TOP_ALL = strip_limit(SQL_TOP)
+
+
+async def test_boundary_ties_computed_without_limit(tmp_path):
+    item = {
+        "id": "T1",
+        "category": "classement",
+        "question": "Type le plus fréquent ?",
+        "expected_kind": "answer",
+        "reference_sql": SQL_TOP,
+        "expected_period": SEPT,
+        "ordered": True,
+        "order_by": ["n"],
+        "tie_tolerant": True,
+    }
+    results = {
+        SQL_TOP: ResultSet(["type", "n"], [("depot", 50)]),
+        SQL_TOP_ALL: ResultSet(["type", "n"], [("depot", 50), ("retrait", 50), ("paiement", 10)]),
+    }
+    d = write_split(tmp_path, "dev", [item])
+
+    def corrupt(it, msg):
+        msg.table.rows = [["retrait", 50]]  # autre ex æquo : juste
+        return msg
+
+    runner, _ = make_runner(d, "dev", passes=1, executor=StaticReferenceExecutor(results), corrupt=corrupt)
+    rep = await runner.run()
+    assert "LIMIT" not in SQL_TOP_ALL.upper()
+    assert runner.refs["T1"].boundary == [("depot", 50), ("retrait", 50)]
+    assert rep["score"]["pass3"]["k"] == 1, rep.get("details")
+
+    def wrong(it, msg):
+        msg.table.rows = [["transfert", 50]]  # même valeur mais pas ex æquo en base
+        return msg
+
+    runner, _ = make_runner(d, "dev", passes=1, executor=StaticReferenceExecutor(results), corrupt=wrong)
+    assert (await runner.run())["score"]["pass3"]["k"] == 0

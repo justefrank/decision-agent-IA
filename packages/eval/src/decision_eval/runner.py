@@ -40,7 +40,7 @@ from decision_core.models import (
 
 from . import stats
 from .antileak import verify_manifest
-from .compare import ResultSet, Verdict, compare_intent, grade
+from .compare import ResultSet, Verdict, compare_intent, grade, is_number, rows_equal
 from .dataset import (
     REFERENCE_DATE,
     Dataset,
@@ -52,7 +52,7 @@ from .dataset import (
     sha256_file,
     split_path,
 )
-from .refs import ReferenceExecutor
+from .refs import ReferenceExecutor, strip_limit
 
 MAX_TEST_RUNS_PER_MILESTONE = 5
 ABLATIONS = {
@@ -160,6 +160,36 @@ async def default_agent_factory(ablation: str) -> AsyncIterator[AgentHandle]:
 # --------------------------------------------------------------------------------------------
 
 
+EVAL_SCALE = 1.0  # échelle des données d'évaluation (make seed SCALE=1.0), documentée dans le README
+
+
+class SmallScaleError(RuntimeError):
+    """Split test refusé : données sous l'échelle d'évaluation ou références dégénérées."""
+
+
+def degenerate_references(ds: Dataset, refs: dict[str, ResultSet]) -> list[str]:
+    """Références attendues non vides qui ne portent aucune information sur ces données : 0 ligne, ou
+    seulement des valeurs numériques nulles ou à zéro (ex. T22 « 0 agent fermé » à SCALE=0.05)."""
+    out = []
+    for it in ds.items:
+        ref = refs.get(it.id)
+        if ref is None or it.expected_empty or it.expected_kind != "answer":
+            continue
+        nums = [v for r in ref.rows for v in r if is_number(v) or v is None]
+        if not ref.rows:
+            out.append(f"{it.id} : 0 ligne")
+        elif nums and len(nums) == sum(len(r) for r in ref.rows) and all(v is None or v == 0 for v in nums):
+            out.append(f"{it.id} : uniquement des zéros")
+    return out
+
+
+def data_scale(meta: dict[str, str] | None) -> float | None:
+    try:
+        return float(meta["scale"]) if meta and meta.get("scale") is not None else None
+    except ValueError:
+        return None
+
+
 @dataclass
 class RunConfig:
     split: str = "dev"
@@ -175,6 +205,10 @@ class RunConfig:
     baseline: Path | None = None  # rapport JSON du bras de base (comparaison appariée des ablations)
     role: str = "analyste"
     timeout_s: float = 120.0
+    # Le split test exige des données à l'échelle d'évaluation (SCALE=1.0) et aucune référence
+    # dégénérée ; --allow-small-scale lève ce garde-fou (exécution alors marquée dans la traçabilité).
+    allow_small_scale: bool = False
+    min_scale: float = EVAL_SCALE
 
     def __post_init__(self) -> None:
         if self.ablation not in ABLATIONS:
@@ -408,6 +442,7 @@ class EvalRunner:
         try:
             if it.reference_sql:
                 self.refs[it.id] = await asyncio.to_thread(self.executor.run, it.reference_sql)
+                await self._boundary(it, self.refs[it.id])
             for i, t in enumerate(it.turns or []):
                 if t.answer and t.answer.reference_sql:
                     self.history_refs[(it.id, i)] = await asyncio.to_thread(
@@ -499,6 +534,48 @@ class EvalRunner:
         finally:
             await asyncio.to_thread(self.setup_executor.restore, saved)
 
+    # -- garde-fou d'échelle (split test) ------------------------------------------------------
+
+    def check_scale(self, data_meta: dict[str, str] | None, degenerate: list[str]) -> None:
+        if self.cfg.allow_small_scale:
+            return
+        problems = []
+        scale = data_scale(data_meta)
+        if scale is not None and scale < self.cfg.min_scale:
+            problems.append(f"échelle des données {scale:g} < {self.cfg.min_scale:g}")
+        if degenerate:
+            problems.append("références dégénérées : " + " ; ".join(degenerate))
+        if problems:
+            raise SmallScaleError(
+                "split test refusé (" + " ; ".join(problems) + "). Charger les données d'évaluation "
+                f"(make seed SCALE={self.cfg.min_scale:g}) ou relancer avec --allow-small-scale "
+                "(exécution alors marquée)."
+            )
+
+    # -- références : ex æquo à la frontière des classements -----------------------------------
+
+    async def _boundary(self, it: EvalItem, ref: ResultSet) -> None:
+        """Classement `tie_tolerant` : ensemble des ex æquo de la dernière ligne, calculé en base en
+        relançant la référence sans LIMIT (le correcteur exige que les lignes de la frontière en
+        fassent partie et accepte les ex æquo supplémentaires)."""
+        if not (it.tie_tolerant and it.order_by and ref.rows and it.reference_sql):
+            return
+        unlimited = strip_limit(it.reference_sql)
+        if unlimited is None:
+            return
+        lower = [c.lower() for c in ref.columns]
+        key_idx = [lower.index(c.lower()) for c in it.order_by if c.lower() in lower]
+        if not key_idx:
+            return
+        try:
+            full = await asyncio.to_thread(self.executor.run, unlimited)
+        except Exception:  # noqa: BLE001 - sans ex æquo connus, le correcteur reste strict à la frontière
+            return
+        if [c.lower() for c in full.columns] != lower:
+            return
+        last = tuple(ref.rows[-1][i] for i in key_idx)
+        ref.boundary = [r for r in full.rows if rows_equal(tuple(r[i] for i in key_idx), last)]
+
     # -- boucle principale ---------------------------------------------------------------------
 
     async def run(self) -> dict[str, Any]:
@@ -506,15 +583,19 @@ class EvalRunner:
         test_hash = None
         if self.cfg.split == "test":
             test_hash = verify_manifest(self.cfg.eval_dir)
-            assert self.cfg.reports_dir is not None
-            QuotaGuard(self.cfg.reports_dir, self.cfg.write_db).reserve(
-                self.run_id, self.cfg.milestone, self.cfg.ablation
-            )
         if any(it.inject for it in ds.items) and self.setup_executor is None:
             raise RuntimeError(
                 "split security : EVAL_SETUP_DSN (propriétaire analytics d'une base de TEST) requis"
             )
         await self.compute_references(ds)
+        data_meta = await asyncio.to_thread(getattr(self.executor, "data_meta", lambda: None))
+        degenerate = degenerate_references(ds, self.refs)
+        if self.cfg.split == "test":
+            self.check_scale(data_meta, degenerate)  # avant de consommer une exécution du quota
+            assert self.cfg.reports_dir is not None
+            QuotaGuard(self.cfg.reports_dir, self.cfg.write_db).reserve(
+                self.run_id, self.cfg.milestone, self.cfg.ablation
+            )
         results: list[PassResult] = []
         t_start = time.perf_counter()
         async with self.agent_factory(self.cfg.ablation) as handle:
@@ -541,6 +622,8 @@ class EvalRunner:
             data_hash=getattr(self.executor, "data_hash", lambda: None)(),
             ref_errors=self.ref_errors,
             refs=self.refs,
+            data_meta=data_meta,
+            degenerate=degenerate,
         )
         if self.cfg.baseline is not None:
             base = json.loads(Path(self.cfg.baseline).read_text(encoding="utf-8"))
@@ -569,6 +652,8 @@ def build_report(
     data_hash: str | None,
     ref_errors: dict[str, str],
     refs: dict[str, ResultSet],
+    data_meta: dict[str, str] | None = None,
+    degenerate: list[str] | None = None,
 ) -> dict[str, Any]:
     by_item: dict[str, list[PassResult]] = {}
     for r in results:
@@ -578,7 +663,7 @@ def build_report(
         q: [r.verdict.passed for r in sorted(rs, key=lambda r: r.pass_index)] for q, rs in by_item.items()
     }
     categories = {q: items[q].category for q in outcomes}
-    k3, n = stats.pass_hat_k(outcomes)
+    k3, n = stats.pass_hat_k(outcomes, cfg.passes)
     ci3 = stats.wilson(k3, n)
     p1 = stats.pass_at_1(outcomes)
     ci1 = stats.cluster_bootstrap_pass_at_1(outcomes)
@@ -645,6 +730,12 @@ def build_report(
             "test_hash": test_hash,
             "git_sha": git_sha(),
             "data_hash": data_hash,
+            "data_scale": data_scale(data_meta),
+            "data_seed": (data_meta or {}).get("seed"),
+            "data_generator_hash": (data_meta or {}).get("data_hash"),
+            "data_meta_source": "raw.raw_meta" if data_meta else "indisponible (data_hash seul)",
+            "eval_scale_required": cfg.min_scale,
+            "small_scale_override": cfg.allow_small_scale,
             "reference_date": cfg.reference_date.isoformat(),
             "cache_off": True,
             "temperature": None,
@@ -685,6 +776,7 @@ def build_report(
         },
         "failures_by_category": failures_by_cat,
         "reference_errors": ref_errors,
+        "degenerate_references": list(degenerate or []),
         "outcomes": outcomes,
         "wall_seconds": round(wall_s, 1),
     }
@@ -830,6 +922,9 @@ def render_markdown(r: dict[str, Any]) -> str:
     if r.get("reference_errors"):
         lines += ["", "## Références en erreur (défaut du jeu)", ""]
         lines += [f"- {k} : {v}" for k, v in r["reference_errors"].items()]
+    if r.get("degenerate_references"):
+        lines += ["", "## Références dégénérées (données trop petites ?)", ""]
+        lines += [f"- {x}" for x in r["degenerate_references"]]
     if r.get("ablation_comparison"):
         c = r["ablation_comparison"]["pass3"]
         lines += [

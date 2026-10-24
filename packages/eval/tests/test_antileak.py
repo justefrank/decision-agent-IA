@@ -7,12 +7,14 @@ import shutil
 import pytest
 from decision_eval.antileak import (
     ManifestError,
+    call_skeleton,
     check_antileak,
     examples_content,
     freeze_manifest,
     normalize_sql,
     run_antileak,
     skeleton_sql,
+    sql_metric_skeleton,
     verify_manifest,
 )
 from decision_eval.dataset import Dataset, eval_dir
@@ -112,3 +114,108 @@ def test_manifest_freeze_verify(tmp_path):
     with pytest.raises(ManifestError, match="modifié"):
         verify_manifest(tmp_path)
     assert freeze_manifest(tmp_path, force=True) != h
+
+
+# ------------------------------------------------------------------ squelettes query_metric
+
+TAUX_RETRAITS = (
+    "SELECT COUNT(*) FILTER (WHERE f.statut = 'echouee')::numeric / NULLIF(COUNT(*), 0) AS t "
+    "FROM analytics.fact_transaction f WHERE f.type = 'retrait' AND f.date_id BETWEEN 20260801 AND 20260831"
+)
+
+
+def qm(**kw):
+    base = {
+        "metrics": [],
+        "compare_to": "none",
+        "group_by": [],
+        "grain": "none",
+        "filters": [],
+        "limit": None,
+    }
+    base.update(kw)
+    return base
+
+
+def test_sql_and_call_skeletons_agree_without_values():
+    sk = sql_metric_skeleton(TAUX_RETRAITS, ["type"])
+    depots = qm(metrics=["taux_echec"], filters=[{"dimension": "type", "values": ["depot"]}])
+    assert sk == call_skeleton(depots)  # autre valeur de filtre, même squelette
+    assert sk != call_skeleton(qm(metrics=["taux_echec"]))
+    assert sk != call_skeleton(qm(metrics=["taux_echec"], group_by=["type"]))
+
+
+def test_sql_skeleton_derivations():
+    top = (
+        "SELECT a.agent_id, a.nom, COALESCE(SUM(f.montant_xof), 0) AS v FROM analytics.fact_transaction f "
+        "JOIN analytics.dim_agent a ON a.agent_id = f.agent_id WHERE f.statut = 'reussie' "
+        "AND f.agent_id <> -1 GROUP BY a.agent_id, a.nom ORDER BY v DESC LIMIT 1"
+    )
+    assert sql_metric_skeleton(top) == call_skeleton(
+        qm(metrics=["valeur_transferee"], group_by=["agent"], order="desc", limit=3)
+    )
+    yoy = (
+        "SELECT SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20260901 AND 20260930) AS a, "
+        "SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20250901 AND 20250930) AS b "
+        "FROM analytics.fact_transaction f WHERE f.statut = 'reussie'"
+    )
+    assert "compare=previous_year" in sql_metric_skeleton(yoy)
+    assert "compare=previous_period" in sql_metric_skeleton(yoy.replace("20250901", "20260801"))
+    region = (
+        "SELECT rc.region, COUNT(*) FROM analytics.fact_transaction f JOIN analytics.dim_region rc "
+        "ON rc.region_id = f.region_client_id GROUP BY rc.region"
+    )
+    assert "group_by=region_client" in sql_metric_skeleton(region)
+    # non exprimable par query_metric : pas de squelette
+    ferie = (
+        "SELECT COUNT(*) FROM analytics.fact_transaction f JOIN analytics.dim_date d "
+        "ON d.date_id = f.date_id WHERE f.statut = 'reussie' AND d.jour_ferie"
+    )
+    assert sql_metric_skeleton(ferie) is None
+    assert sql_metric_skeleton("SELECT COUNT(*) FROM analytics.dim_agent a") is None
+
+
+def test_check_antileak_detects_query_metric_examples():
+    test = ds("test", [answer_item("T1", "Part des retraits échoués en août ?", TAUX_RETRAITS)])
+    leak = {
+        "examples": [
+            {
+                "id": "ex03",
+                "question": "Proportion des dépôts non aboutis en octobre 2025 ?",
+                "appel": {
+                    "outil": "query_metric",
+                    "arguments": qm(
+                        metrics=["taux_echec"], filters=[{"dimension": "type", "values": ["depot"]}]
+                    ),
+                },
+            }
+        ]
+    }
+    rep = check_antileak(test, leak)
+    assert rep.metric_calls == ["T1 ↔ ex03"] and not rep.ok
+    leak["examples"][0]["appel"]["arguments"]["group_by"] = ["segment"]
+    assert check_antileak(test, leak).ok
+
+
+def test_check_antileak_detects_terminal_examples_on_same_subject():
+    item = {
+        "id": "T27",
+        "category": "ambigu_hors_perimetre",
+        "trap": "hors_modele",
+        "question": "Quels sont les destinataires qui reçoivent le plus de transferts ?",
+        "expected_kind": "refusal",
+    }
+    test = ds("test", [item])
+
+    def ex(q, cat="hors_modele"):
+        return {
+            "examples": [
+                {"id": "ex19", "question": q, "appel": {"outil": "refuse", "arguments": {"category": cat}}}
+            ]
+        }
+
+    assert check_antileak(test, ex("Quel client a reçu le plus d'argent par transfert ?")).intents == [
+        "T27 ↔ ex19"
+    ]
+    assert check_antileak(test, ex("Quel est le solde moyen des comptes clients ?")).ok
+    assert check_antileak(test, ex("Quel client a reçu le plus d'argent par transfert ?", "contournement")).ok

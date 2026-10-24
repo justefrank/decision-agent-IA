@@ -60,11 +60,13 @@ def cmd_run(a: argparse.Namespace) -> int:
         reference_date=ref_date,
         write_db=write_db,
         baseline=Path(a.baseline) if a.baseline else None,
+        allow_small_scale=a.allow_small_scale,
     )
     setup = os.environ.get("EVAL_SETUP_DSN")
+    meta_dsn = os.environ.get("EVAL_META_DSN") or setup
     runner = EvalRunner(
         cfg,
-        executor=PgReferenceExecutor(_agent_ro_dsn()),
+        executor=PgReferenceExecutor(_agent_ro_dsn(), meta_dsn=meta_dsn),
         setup_executor=PgSetupExecutor(setup) if setup else None,
     )
     report = asyncio.run(runner.run())
@@ -173,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--write-db", default=None, metavar="DSN", help="DSN app_rw (préférer --write-db-env)")
     r.add_argument("--write-db-env", action="store_true", help="lit le DSN dans EVAL_DB_DSN")
     r.add_argument("--baseline", default=None, help="rapport JSON du bras de base (ablations)")
+    r.add_argument(
+        "--allow-small-scale",
+        action="store_true",
+        help="autorise le split test sous SCALE=1.0 ou avec des références dégénérées (marqué)",
+    )
     r.set_defaults(func=cmd_run)
     al = sub.add_parser("antileak")
     al.set_defaults(func=cmd_antileak)

@@ -21,11 +21,11 @@ SELECT i, r, 'Sénégal' FROM unnest(ARRAY['Dakar','Thiès','Diourbel','Kaolack'
 
 CREATE TABLE analytics.dim_date (
   date_id integer PRIMARY KEY, date date NOT NULL, jour_semaine smallint, semaine_iso smallint,
-  mois smallint, nom_mois text, trimestre smallint, annee smallint, est_weekend boolean,
+  annee_iso smallint, mois smallint, nom_mois text, trimestre smallint, annee smallint, est_weekend boolean,
   jour_ferie boolean, debut_mois date, fin_mois date);
 INSERT INTO analytics.dim_date
 SELECT to_char(d, 'YYYYMMDD')::int, d::date, extract(isodow FROM d)::smallint,
-       extract(week FROM d)::smallint, extract(month FROM d)::smallint,
+       extract(week FROM d)::smallint, to_char(d, 'IYYY')::smallint, extract(month FROM d)::smallint,
        (ARRAY['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre',
               'novembre','décembre'])[extract(month FROM d)::int],
        extract(quarter FROM d)::smallint, extract(year FROM d)::smallint,

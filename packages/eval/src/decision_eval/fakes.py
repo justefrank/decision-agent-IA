@@ -26,7 +26,7 @@ from decision_core.models import (
     TableData,
 )
 
-from .compare import ResultSet, is_integral, is_number
+from .compare import ID_COLUMN_RE, ResultSet, is_integral, is_number
 from .dataset import Dataset, EvalItem
 from .refs import ReferenceExecutor
 from .runner import AgentHandle
@@ -66,9 +66,12 @@ def message_from_reference(item: EvalItem, ref: ResultSet | None) -> AssistantMe
         cols.append(ColumnInfo(name=name, type=typ, role=role))  # type: ignore[arg-type]
     rows = [[_plain(v) for v in r] for r in ref.rows]
     facts: list[Fact] = []
+    measure_js = [
+        j for j, c in enumerate(cols) if c.role == "measure" and not ID_COLUMN_RE.search(c.name.lower())
+    ]
     for r in rows[:5]:
-        for v in r:
-            if is_number(v):
+        for j, v in enumerate(r):
+            if j in measure_js and is_number(v):
                 unit = "count" if is_integral(v) else "ratio"
                 facts.append(
                     Fact(id=f"f{len(facts) + 1}", value=v, unit=unit, label="valeur", rendered=str(v))

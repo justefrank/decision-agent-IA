@@ -72,6 +72,16 @@ def check_reference_sql(sql: str, allowed: Iterable[str] = ALLOWED_TABLES) -> li
     return sorted(tables)
 
 
+def strip_limit(sql: str) -> str | None:
+    """SQL de référence sans son LIMIT de tête (ensemble complet d'un classement) ; None sans LIMIT."""
+    tree = sqlglot.parse_one(sql, read="postgres")
+    if not isinstance(tree, exp.Query) or tree.args.get("limit") is None:
+        return None
+    tree = tree.copy()
+    tree.set("limit", None)
+    return tree.sql(dialect="postgres")
+
+
 class ReferenceExecutor(Protocol):
     def run(self, sql: str) -> ResultSet: ...
 
@@ -79,8 +89,9 @@ class ReferenceExecutor(Protocol):
 class PgReferenceExecutor:
     """Exécute les références en lecture seule (rôle agent_ro), sans cache."""
 
-    def __init__(self, dsn: str, *, statement_timeout_s: int = 30) -> None:
+    def __init__(self, dsn: str, *, statement_timeout_s: int = 30, meta_dsn: str | None = None) -> None:
         self.dsn = dsn
+        self.meta_dsn = meta_dsn
         self.timeout_ms = statement_timeout_s * 1000
 
     def run(self, sql: str) -> ResultSet:
@@ -107,6 +118,20 @@ class PgReferenceExecutor:
                 return str(row[0])[:16] if row and row[0] else None
         except psycopg.Error:
             return None
+
+    def data_meta(self) -> dict[str, str] | None:
+        """Échelle, graine et hash du générateur (raw.raw_meta). agent_ro n'a pas accès au schéma raw :
+        `meta_dsn` (EVAL_META_DSN, rôle lecteur de raw) est essayé d'abord ; None si illisible."""
+        import psycopg
+
+        for dsn in dict.fromkeys(d for d in (self.meta_dsn, self.dsn) if d):
+            try:
+                with psycopg.connect(dsn) as conn:
+                    rows = conn.execute("SELECT cle, valeur FROM raw.raw_meta").fetchall()
+                return {str(k): str(v) for k, v in rows}
+            except psycopg.Error:
+                continue
+        return None
 
 
 class PgSetupExecutor:

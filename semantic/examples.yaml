@@ -7,50 +7,53 @@
 version: 1
 examples:
   - id: ex01
-    question: "Montant des frais encaissés en novembre 2025"
-    piege: "les frais ne portent que sur les transactions réussies (déjà dans la définition certifiée)"
+    question: "Montant des frais payés par les clients de Kaolack en novembre 2025"
+    piege: >
+      les frais ne portent que sur les transactions réussies (déjà dans la définition certifiée) ;
+      « les clients de Kaolack » fixe le sens de région (region_client) malgré le défaut region_agent des frais
     appel:
       outil: query_metric
       arguments: {metrics: [revenus_frais], period: {kind: absolute, start: "2025-11-01", end: "2025-11-30", relative: null},
-                  compare_to: none, group_by: [], grain: none, filters: [], order: none, limit: null}
-    reponse: "Les revenus de frais de novembre 2025 s'élèvent à {{f1}}."
-
+                  compare_to: none, group_by: [], grain: none, filters: [{dimension: region_client, values: [Kaolack]}],
+                  order: none, limit: null}
+    reponse: "Les frais payés par les clients de Kaolack en novembre 2025 s'élèvent à {{f1}}."
   - id: ex02
-    question: "Nombre d'opérations abouties entre le 6 et le 12 octobre 2025"
-    piege: "« abouties » = réussies ; volume_transactions compte déjà les réussies seulement"
+    question: "Nombre d'opérations abouties réalisées par des commerçants entre le 6 et le 12 octobre 2025"
+    piege: "« abouties » = réussies ; volume_transactions compte déjà les réussies seulement ; « commerçants » = segment"
     appel:
       outil: query_metric
       arguments: {metrics: [volume_transactions], period: {kind: absolute, start: "2025-10-06", end: "2025-10-12", relative: null},
-                  compare_to: none, group_by: [], grain: none, filters: [], order: none, limit: null}
-
+                  compare_to: none, group_by: [], grain: none, filters: [{dimension: segment, values: [commercant]}],
+                  order: none, limit: null}
   - id: ex03
-    question: "Quelle proportion des dépôts n'a pas abouti en octobre 2025 ?"
-    piege: "taux d'échec = échouées / toutes les transactions (le dénominateur n'est pas filtré sur « reussie »)"
+    question: "Quelle proportion des opérations n'a pas abouti dans les points de service de Matam en octobre 2025 ?"
+    piege: >
+      taux d'échec = échouées / toutes les transactions (le dénominateur n'est pas filtré sur « reussie ») ;
+      « points de service de Matam » = region_agent (le taux d'échec n'a pas de défaut de région)
     appel:
       outil: query_metric
       arguments: {metrics: [taux_echec], period: {kind: absolute, start: "2025-10-01", end: "2025-10-31", relative: null},
-                  compare_to: none, group_by: [], grain: none, filters: [{dimension: type, values: [depot]}],
+                  compare_to: none, group_by: [], grain: none, filters: [{dimension: region_agent, values: [Matam]}],
                   order: none, limit: null}
-    reponse: "En octobre 2025, {{f1}} des dépôts ont échoué."
-
+    reponse: "En octobre 2025, {{f1}} des opérations des points de service de Matam ont échoué."
   - id: ex04
-    question: "Combien de clients différents ont réalisé au moins une opération en décembre 2025 ?"
-    piege: "client actif = au moins une transaction réussie DANS la période demandée"
+    question: "Combien de clients différents ont réglé au moins un paiement en décembre 2025 ?"
+    piege: "client actif = au moins une transaction réussie DANS la période demandée ; ici limitée aux paiements (filtre type)"
     appel:
       outil: query_metric
       arguments: {metrics: [clients_actifs], period: {kind: absolute, start: "2025-12-01", end: "2025-12-31", relative: null},
-                  compare_to: none, group_by: [], grain: none, filters: [], order: none, limit: null}
-
+                  compare_to: none, group_by: [], grain: none, filters: [{dimension: type, values: [paiement]}],
+                  order: none, limit: null}
   - id: ex05
-    question: "Combien de points de service sont en activité ?"
+    question: "Combien de points de service sont en activité dans la région de Kaolack ?"
     piege: >
       agent actif = au moins une transaction réussie (pas statut_agent) ; sans période, le code applique le
-      défaut (30 derniers jours finissant à REFERENCE_DATE) et l'annonce
+      défaut (30 derniers jours finissant à REFERENCE_DATE) et l'annonce ; région d'un agent = region_agent
     appel:
       outil: query_metric
       arguments: {metrics: [agents_actifs], period: {kind: defaut, start: null, end: null, relative: null},
-                  compare_to: none, group_by: [], grain: none, filters: [], order: none, limit: null}
-
+                  compare_to: none, group_by: [], grain: none, filters: [{dimension: region_agent, values: [Kaolack]}],
+                  order: none, limit: null}
   - id: ex06
     question: "Répartis les points de service selon leur statut administratif"
     piege: "statut_agent (ouvert/fermé) n'est pas « agent actif » ; exclure la ligne -1 « Hors agent »"
@@ -64,16 +67,15 @@ examples:
         declared_scope: {statut: toutes, region_kind: aucune}
 
   - id: ex07
-    question: "Frais par région en novembre 2025"
-    piege: "« région » seule pour les frais → défaut region_agent (point de service), annoncé par le code"
+    question: "Classe les régions selon les frais encaissés au premier trimestre 2026"
+    piege: "« régions » seules pour les frais → défaut region_agent (point de service), annoncé par le code"
     appel:
       outil: query_metric
-      arguments: {metrics: [revenus_frais], period: {kind: absolute, start: "2025-11-01", end: "2025-11-30", relative: null},
+      arguments: {metrics: [revenus_frais], period: {kind: absolute, start: "2026-01-01", end: "2026-03-31", relative: null},
                   compare_to: none, group_by: [region_agent], grain: none, filters: [], order: desc, limit: null}
-
   - id: ex08
-    question: "Nombre de transactions par région en octobre 2025"
-    piege: "volume sans défaut de région → une seule clarification"
+    question: "Dans quelles régions les opérations échouent-elles le plus souvent depuis janvier 2026 ?"
+    piege: "taux d'échec sans défaut de région → une seule clarification sur le sens de « région »"
     appel:
       outil: ask_clarification
       arguments:
@@ -82,7 +84,6 @@ examples:
         options:
           - {label: Région du point de service, patch: {field: sens_region, value: region_agent}}
           - {label: Région du client, patch: {field: sens_region, value: region_client}}
-
   - id: ex09
     question: "Valeur des transferts émis par les clients de Ziguinchor en octobre 2025"
     piege: "les transferts n'ont pas de point de service (region_agent = -1) → filtrer sur region_client"
@@ -94,14 +95,13 @@ examples:
                   order: none, limit: null}
 
   - id: ex10
-    question: "Les frais de novembre 2025 progressent-ils par rapport au mois d'avant ?"
+    question: "Le nombre de clients actifs de novembre 2025 progresse-t-il par rapport au mois d'avant ?"
     piege: "la variation est un dérivé calculé par le code ({{d…}}) ; ne jamais la calculer soi-même"
     appel:
       outil: query_metric
-      arguments: {metrics: [revenus_frais], period: {kind: absolute, start: "2025-11-01", end: "2025-11-30", relative: null},
+      arguments: {metrics: [clients_actifs], period: {kind: absolute, start: "2025-11-01", end: "2025-11-30", relative: null},
                   compare_to: previous_period, group_by: [], grain: none, filters: [], order: none, limit: null}
-    reponse: "Les frais de novembre 2025 atteignent {{f1}}, soit {{d2}} par rapport à octobre 2025 ({{d1}})."
-
+    reponse: "Les clients actifs de novembre 2025 sont {{f1}}, soit {{d2}} par rapport à octobre 2025 ({{d1}})."
   - id: ex11
     question: "Volume de juin 2026 comparé au même mois de l'année précédente"
     piege: "« même mois l'an dernier » = previous_year, pas previous_period"
@@ -111,14 +111,13 @@ examples:
                   compare_to: previous_year, group_by: [], grain: none, filters: [], order: none, limit: null}
 
   - id: ex12
-    question: "Les trois points de service qui ont fait transiter le plus d'argent en octobre 2025"
+    question: "Les trois points de service qui ont rapporté le plus de frais en octobre 2025"
     piege: "classement d'agents → la ligne « Hors agent » est exclue ; les noms sont masqués (citer {{l:A…}})"
     appel:
       outil: query_metric
-      arguments: {metrics: [valeur_transferee], period: {kind: absolute, start: "2025-10-01", end: "2025-10-31", relative: null},
+      arguments: {metrics: [revenus_frais], period: {kind: absolute, start: "2025-10-01", end: "2025-10-31", relative: null},
                   compare_to: none, group_by: [agent], grain: none, filters: [], order: desc, limit: 3}
     reponse: "En tête en octobre 2025 : {{l:A1}} avec {{f1}}, puis {{l:A2}} ({{f2}}) et {{l:A3}} ({{f3}})."
-
   - id: ex13
     question: "Paiements jour par jour sur la première semaine de novembre 2025"
     piege: "série temporelle → grain day ; le graphique (courbe) est choisi par le code"
@@ -185,12 +184,11 @@ examples:
       arguments: {category: modification_demandee, reason: "Je n'ai qu'un accès en lecture : aucune modification des données n'est possible."}
 
   - id: ex19
-    question: "Quel client a reçu le plus d'argent par transfert ?"
-    piege: "le destinataire d'un transfert n'existe pas dans le modèle"
+    question: "Quel est le solde moyen des comptes des clients ?"
+    piege: "le solde des comptes n'existe pas dans le modèle (seules les transactions sont décrites)"
     appel:
       outil: refuse
-      arguments: {category: hors_modele, reason: "Le modèle de données ne contient pas le destinataire des transferts."}
-
+      arguments: {category: hors_modele, reason: "Le modèle de données ne contient pas le solde des comptes clients."}
   - id: ex20
     question: "Et pour les entreprises uniquement ?"
     contexte: "état résolu : revenus_frais, novembre 2025, national"

@@ -32,8 +32,19 @@ def wilson(k: int, n: int, z: float = Z95) -> tuple[float, float]:
     return (max(0.0, center - half), min(1.0, center + half))
 
 
-def pass_hat_k(outcomes: Mapping[str, Sequence[bool]]) -> tuple[int, int]:
-    """(questions réussies à toutes les passes, n)."""
+def check_passes(outcomes: Mapping[str, Sequence[bool]], passes: int) -> None:
+    """Chaque question doit avoir exactement `passes` résultats (sinon pass^k et cohérence sont faux)."""
+    if passes < 1:
+        raise ValueError("passes >= 1 requis")
+    bad = {q: len(v) for q, v in outcomes.items() if len(v) != passes}
+    if bad:
+        detail = ", ".join(f"{q} : {n}" for q, n in sorted(bad.items())[:10])
+        raise ValueError(f"{len(bad)} question(s) sans exactement {passes} passes ({detail})")
+
+
+def pass_hat_k(outcomes: Mapping[str, Sequence[bool]], passes: int = 3) -> tuple[int, int]:
+    """(questions réussies aux `passes` passes, n). Lève ValueError si une question n'a pas k passes."""
+    check_passes(outcomes, passes)
     k = sum(1 for v in outcomes.values() if v and all(v))
     return k, len(outcomes)
 
@@ -64,7 +75,8 @@ def cluster_bootstrap_pass_at_1(
 
 
 def consistency(outcomes: Mapping[str, Sequence[bool]], passes: int = 3) -> dict[str, int]:
-    """Distribution « k/passes » (ex. 3/3, 2/3, 1/3, 0/3)."""
+    """Distribution « k/passes » (ex. 3/3, 2/3, 1/3, 0/3). ValueError si une question n'a pas k passes."""
+    check_passes(outcomes, passes)
     dist = {f"{k}/{passes}": 0 for k in range(passes, -1, -1)}
     for v in outcomes.values():
         key = f"{sum(v)}/{passes}"

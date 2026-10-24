@@ -99,3 +99,19 @@ def test_test_and_dev_questions_distinct(datasets):
 
 def test_manifest_matches():
     assert len(verify_manifest()) == 64
+
+
+def test_fixture_columns_match_semantic_tables():
+    """La fixture analytics déclare exactement les colonnes de semantic/tables.yaml."""
+    import re
+
+    import yaml
+    from decision_eval.dataset import repo_root
+    from decision_eval.fixture import FIXTURE_SQL
+
+    tables = yaml.safe_load((repo_root() / "semantic" / "tables.yaml").read_text(encoding="utf-8"))
+    for name, spec in tables["tables"].items():
+        m = re.search(rf"CREATE TABLE analytics\.{name} \((.*?)\);", FIXTURE_SQL, re.S)
+        assert m, name
+        cols = [c.strip().split()[0] for c in re.split(r",(?![^()]*\))", m.group(1)) if c.strip()]
+        assert cols == list(spec["columns"]), (name, cols)

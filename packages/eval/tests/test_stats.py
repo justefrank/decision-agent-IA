@@ -95,3 +95,14 @@ def test_honest_sentence():
     assert "est démontrée" in stats.honest_sentence(38, 40)
     assert "n'est pas atteinte" in stats.honest_sentence(20, 40)
     assert "Aucune" in stats.honest_sentence(0, 0)
+
+
+def test_pass_hat_and_consistency_require_k_passes():
+    incomplete = {"q1": [True, True, True], "q2": [True, True]}  # une passe manquante
+    with pytest.raises(ValueError, match="exactement 3 passes"):
+        stats.pass_hat_k(incomplete, 3)
+    with pytest.raises(ValueError, match="q2"):
+        stats.consistency(incomplete, 3)
+    with pytest.raises(ValueError):
+        stats.pass_hat_k({"q1": []}, 3)  # question sans aucune passe
+    assert stats.pass_hat_k({"q1": [True]}, 1) == (1, 1)

@@ -79,12 +79,13 @@ async def test_oracle_agent_scores_100(agent_ro, tmp_path, split):
     d = copy_eval(tmp_path, *files)
     ds = load_dataset(d / f"{split}.yaml")
     runner = EvalRunner(
-        RunConfig(split=split, passes=1, eval_dir=d),
+        # base de développement (fixture ou SCALE réduite) : le garde-fou d'échelle est levé
+        RunConfig(split=split, passes=1, eval_dir=d, allow_small_scale=True),
         executor=agent_ro,
         agent_factory=oracle_factory(OracleAgent(ds, agent_ro)),
     )
     rep = await runner.run()
-    assert rep["score"]["pass3"]["k"] == rep["n"], rep["failures_by_category"]
+    assert rep["score"]["pass3"]["k"] == rep["n"], rep.get("details") or rep["failures_by_category"]
     assert rep["trace"]["data_hash"]
     assert not rep["reference_errors"]
 
@@ -137,7 +138,14 @@ async def test_write_db_and_quota_counter(agent_ro, tmp_path):
         conn.execute("DELETE FROM app.eval_run WHERE report->>'milestone' = 'TEST-DB'")
     d = copy_eval(tmp_path, "test.yaml", "MANIFEST")
     ds = load_dataset(d / "test.yaml")
-    cfg = RunConfig(split="test", passes=1, eval_dir=d, milestone="TEST-DB", write_db=role_dsn("app_rw"))
+    cfg = RunConfig(
+        split="test",
+        passes=1,
+        eval_dir=d,
+        milestone="TEST-DB",
+        write_db=role_dsn("app_rw"),
+        allow_small_scale=True,
+    )
     runner = EvalRunner(cfg, executor=agent_ro, agent_factory=oracle_factory(OracleAgent(ds, agent_ro)))
     rep = await runner.run()
     assert rep["db_run_id"]

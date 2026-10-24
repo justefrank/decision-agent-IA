@@ -39,7 +39,9 @@ def rs(cols, rows):
     return ResultSet.of(cols, rows)
 
 
-def msg(cols=None, rows=None, facts=(), period=None, region_kind=None, scope=None, kind="answer", **kw):
+def msg(
+    cols=None, rows=None, facts=(), period=None, region_kind=None, scope=None, kind="answer", text="t", **kw
+):
     table = None
     if cols is not None:
         table = TableData(
@@ -53,8 +55,11 @@ def msg(cols=None, rows=None, facts=(), period=None, region_kind=None, scope=Non
         st.region_kind = ResolvedField(value=region_kind, source="defaut")
     if scope is not None:
         st.scope = ResolvedField(value=scope, source="explicite")
-    fs = [Fact(id=f"f{i}", value=v, unit=u, label="x", rendered=str(v)) for i, (v, u) in enumerate(facts)]
-    return AssistantMessage(kind=kind, text="t", table=table, facts=fs, resolved_state=st, **kw)
+    fs = []
+    for i, f in enumerate(facts):
+        v, u, fid, label = (*f, f"f{i}", "x")[:4] if len(f) == 2 else f
+        fs.append(Fact(id=fid, value=v, unit=u, label=label, rendered=str(v)))
+    return AssistantMessage(kind=kind, text=text, table=table, facts=fs, resolved_state=st, **kw)
 
 
 # ------------------------------------------------------------------ valeurs
@@ -178,6 +183,54 @@ class TestExecution:
             ref, rs(["region", "n"], [("Dakar", 9), ("Thiès", 7), ("Louga", 5)]), it2
         ).ok
 
+    def test_top1_all_tied_requires_identity_among_db_ties(self):
+        # T37 : top-1, la seule ligne est à la frontière (n_core = 0)
+        it = item(
+            ordered=True,
+            order_by=["v"],
+            tie_tolerant=True,
+            prefix_ok=True,
+            column_groups=[["agent_id", "nom"]],
+        )
+        ref = rs(["agent_id", "nom", "v"], [(12, "Agent 012", 900)])
+        wrong = rs(["agent_id", "nom", "v"], [(999, "Mauvais agent", 900)])
+        assert not compare_execution(ref, wrong, it).ok  # sans ex æquo connus : identité exigée
+        ref.boundary = [(12, "Agent 012", 900), (40, "Agent 040", 900)]
+        assert not compare_execution(ref, wrong, it).ok
+        assert compare_execution(ref, rs(["nom", "v"], [("Agent 040", 900)]), it).ok
+        assert compare_execution(ref, rs(["agent_id", "v"], [(12, 900)]), it).ok
+
+    def test_tie_extra_rows_at_cutoff(self):
+        # T20 : top-5 avec trois villes ex æquo à 4 ; une réponse qui les donne toutes est juste
+        it = item(ordered=True, order_by=["n"], tie_tolerant=True)
+        ref = rs(
+            ["ville", "n"],
+            [("Dakar", 19), ("Thiès", 7), ("Rufisque", 5), ("Touba", 5), ("Louga", 4)],
+        )
+        all_ties = rs(
+            ["ville", "n"],
+            [
+                ("Dakar", 19),
+                ("Thiès", 7),
+                ("Touba", 5),
+                ("Rufisque", 5),
+                ("Louga", 4),
+                ("Pikine", 4),
+                ("Saint-Louis", 4),
+            ],
+        )
+        assert not compare_execution(ref, all_ties, it).ok  # ex æquo non vérifiables sans la base
+        ref.boundary = [("Louga", 4), ("Pikine", 4), ("Saint-Louis", 4)]
+        assert compare_execution(ref, all_ties, it).ok
+        other_tie = rs(["ville", "n"], [*ref.rows[:4], ("Saint-Louis", 4)])
+        assert compare_execution(ref, other_tie, it).ok
+        # ligne en trop qui n'est pas ex æquo (ou inventée) : refusée
+        assert not compare_execution(ref, rs(["ville", "n"], [*ref.rows, ("Kolda", 3)]), it).ok
+        assert not compare_execution(ref, rs(["ville", "n"], [*ref.rows, ("Matam", 4)]), it).ok
+        assert not compare_execution(
+            ref, rs(["ville", "n"], [*ref.rows, ("Pikine", 4), ("Pikine", 4)]), it
+        ).ok
+
     def test_tie_at_cutoff_with_id_groups(self):
         ref = rs(["agent_id", "nom", "n"], [(1, "A1", 9), (2, "A2", 5)])
         it = item(ordered=True, order_by=["n"], tie_tolerant=True, column_groups=[["agent_id", "nom"]])
@@ -220,10 +273,32 @@ class TestExecution:
         assert compare_execution(ref, got).ok
         wrong = rs(["periode", "valeur_transferee"], [("courante", 219047481), ("comparaison", 216348000)])
         assert not compare_execution(ref, wrong).ok
-        # Limite documentée : la projection se fait par valeurs, pas par noms ; une inversion
-        # courante/comparaison n'est pas détectée par l'exécution (la période résolue l'est).
+        # Inversion courante/comparaison : les colonnes de période sont projetées par la valeur de
+        # `periode`, pas par les valeurs seules.
         swapped = rs(["periode", "valeur_transferee"], [("courante", 216348235), ("comparaison", 219047481)])
-        assert compare_execution(ref, swapped).ok
+        res = compare_execution(ref, swapped)
+        assert not res.ok and res.reason == "periodes_inversees"
+
+    def test_pivot_swapped_periods_from_reference_sql(self):
+        # T09/T12 : colonnes nommées librement ; le couple (courante, comparaison) vient du SQL
+        it = item(
+            reference_sql=(
+                "SELECT COALESCE(SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20260801 AND 20260831), 0) "
+                "AS frais_aout, COALESCE(SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20260701 AND "
+                "20260731), 0) AS frais_juillet FROM analytics.fact_transaction f WHERE f.statut = 'reussie'"
+            )
+        )
+        ref = rs(["frais_aout", "frais_juillet"], [(500, 400)])
+        good = rs(["periode", "revenus_frais"], [("courante", 500), ("comparaison", 400)])
+        swapped = rs(["periode", "revenus_frais"], [("courante", 400), ("comparaison", 500)])
+        assert compare_execution(ref, good, it).ok
+        assert not compare_execution(ref, swapped, it).ok
+        # deux métriques comparées : chaque comparaison doit être celle de sa propre mesure
+        ref2 = rs(["courante", "precedente"], [(5, 4)])
+        crossed = rs(
+            ["periode", "a", "b"], [("courante", 5, 4), ("comparaison", 9, 9)]
+        )  # 4 vient de la mesure b courante, pas de a__comparaison
+        assert not compare_execution(ref2, crossed).ok
 
     def test_pivot_with_dimension(self):
         ref = rs(["segment", "sept", "aout"], [("a", 1, 2), ("b", 3, 4)])
@@ -275,8 +350,63 @@ class TestFacts:
         ref = rs(["courante", "precedente"], [(Decimal("219047481"), Decimal("216348235"))])
         diff = 219047481 - 216348235
         pct = 100 * diff / 216348235
-        m = msg(facts=[(219047481, "xof"), (216348235, "xof"), (diff, "xof"), (pct, "pct")])
+        m = msg(
+            facts=[
+                (219047481, "xof"),
+                (216348235, "xof"),
+                (diff, "xof", "d1", "Écart de Valeur transférée — septembre 2026 vs août 2026"),
+                (pct, "pct", "d2", "Variation de Valeur transférée — septembre 2026 vs août 2026"),
+            ]
+        )
         assert compare_facts(ref, m).ok
+        # une différence non déclarée comme dérivé (fait `f…` ordinaire) n'est plus acceptée
+        assert not compare_facts(ref, msg(facts=[(219047481, "xof"), (216348235, "xof"), (diff, "xof")])).ok
+
+    def test_reversed_comparison_rejected(self):
+        # T09 : variation de signe opposé (périodes interverties) refusée
+        ref = rs(["courante", "precedente"], [(Decimal("219047481"), Decimal("216348235"))])
+        a, b = 219047481, 216348235
+        lab = "Variation de Valeur transférée — septembre 2026 vs août 2026"
+        cells = [(a, "xof"), (b, "xof")]
+        good = msg(facts=[*cells, (round(100 * (a - b) / b, 6), "pct", "d1", lab)])
+        assert compare_facts(ref, good).ok
+        rev = msg(facts=[*cells, (round(100 * (b - a) / a, 6), "pct", "d1", lab)])
+        assert compare_facts(ref, rev).reason == "chiffre_non_conforme"
+        rev_ecart = msg(facts=[*cells, (b - a, "xof", "d2", "Écart de Valeur transférée")])
+        assert not compare_facts(ref, rev_ecart).ok
+        # couple dérivé du SQL de référence quand les colonnes sont nommées librement
+        it = item(
+            reference_sql=(
+                "SELECT SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20260801 AND 20260831) AS aout, "
+                "SUM(f.frais_xof) FILTER (WHERE f.date_id BETWEEN 20260701 AND 20260731) AS juillet "
+                "FROM analytics.fact_transaction f"
+            )
+        )
+        ref2 = rs(["aout", "juillet"], [(500, 400)])
+        ok2 = msg(facts=[(500, "xof"), (400, "xof"), (25.0, "pct", "d1", "Variation de Revenus de frais")])
+        assert compare_facts(ref2, ok2, it).ok
+        bad2 = msg(facts=[(500, "xof"), (400, "xof"), (-20.0, "pct", "d1", "Variation de Revenus de frais")])
+        assert not compare_facts(ref2, bad2, it).ok
+
+    def test_small_integers_attached_to_cells(self):
+        # T36 : agents actifs par région ; un entier quelconque n'est plus « une différence de cellules »
+        ref = rs(["region", "agents_actifs"], [("Dakar", 41), ("Thiès", 17), ("Louga", 9), ("Matam", 3)])
+        accepted = [
+            v for v in range(60) if compare_facts(ref, msg(facts=[(v, "count", "f1", "Agents actifs")])).ok
+        ]
+        assert accepted == [3, 9, 17, 41]
+        # rattachement à la ligne par le libellé : la valeur de Dakar doit être celle de Dakar
+        assert compare_facts(ref, msg(facts=[(41, "count", "f1", "Agents actifs — Dakar — août 2026")])).ok
+        assert not compare_facts(
+            ref, msg(facts=[(17, "count", "f1", "Agents actifs — Dakar — août 2026")])
+        ).ok
+        assert compare_facts(
+            ref, msg(facts=[(70, "count", "f9", "Total de Agents actifs (somme des lignes)")])
+        ).ok
+        assert compare_facts(ref, msg(facts=[(4, "count", "f9", "Nombre de lignes du résultat r1")])).ok
+        part = round(100 * 17 / 70, 6)
+        assert compare_facts(ref, msg(facts=[(part, "pct", "d1", "Part de Thiès dans Agents actifs")])).ok
+        assert not compare_facts(ref, msg(facts=[(part, "pct", "d1", "Part de Dakar dans Agents actifs")])).ok
 
     def test_must_cite_all_single_row_values(self):
         ref = rs(["courante", "precedente"], [(10, 8)])
@@ -288,8 +418,10 @@ class TestFacts:
     def test_multi_row_any_cited_value(self):
         ref = rs(["region", "v"], [("Dakar", 90), ("Thiès", 10)])
         assert compare_facts(ref, msg(facts=[(90, "xof")])).ok
-        assert compare_facts(ref, msg(facts=[(100, "xof")])).ok  # total : dérivé admis
-        assert compare_facts(ref, msg(facts=[(90.0, "pct")])).ok  # part en % : dérivé admis
+        total = (100, "xof", "f5", "Total de Valeur transférée (somme des lignes)")
+        assert compare_facts(ref, msg(facts=[total])).ok  # total déclaré
+        assert not compare_facts(ref, msg(facts=[(100, "xof")])).ok  # total présenté comme cellule
+        assert compare_facts(ref, msg(facts=[(90.0, "pct", "d1", "Part de Dakar dans Valeur")])).ok
         assert not compare_facts(ref, msg(facts=[(91, "xof")])).ok
 
     def test_only_rendered_facts_count_when_present(self):
@@ -463,3 +595,32 @@ def test_ratio_facts_param(got):
     ref = rs(["taux"], [(Decimal("0.06108897742363877822"),)])
     unit = "pct" if got > 1 else "ratio"
     assert compare_facts(ref, msg(facts=[(got, unit)])).ok
+
+
+def test_grade_expected_empty_explained_without_table():
+    # T38 : vide par construction ; la réponse explique l'impossibilité sans tableau ni état résolu
+    it = item(
+        expected_period={"start": "2026-09-01", "end": "2026-09-30"},
+        expected_scope={
+            "region_kind": "region_agent",
+            "filters": {"region_agent": ["Kédougou"], "type": ["transfert"]},
+        },
+        expected_empty=True,
+    )
+    ref = rs(["agent_id", "nom", "volume_transferts"], [])
+    text = "Les transferts n'ont pas de point de service : aucun agent de Kédougou ne peut en réaliser."
+    v = grade(it, msg(text=text), ref)
+    assert v.passed, v.reasons
+    assert grade(it, msg(caveats=["resultat_vide"]), ref).passed
+    # sans explication du vide : période et périmètre restent exigés
+    v = grade(it, msg(text="Voici la réponse."), ref)
+    assert not v.passed and "periode:periode_absente" in v.reasons
+    # période fausse présente : toujours vérifiée
+    assert not grade(it, msg(text=text, period=("2026-08-01", "2026-08-31")), ref).passed
+
+
+def test_identifier_columns_are_not_cited_values():
+    # T37 : agent_id n'est ni une valeur citable ni une valeur à citer
+    ref = rs(["agent_id", "nom", "valeur_transferee"], [(6, "Agent 006", Decimal("19482990"))])
+    assert compare_facts(ref, msg(facts=[(19482990, "xof")])).ok
+    assert not compare_facts(ref, msg(facts=[(19482990, "xof"), (6, "count")])).ok
