@@ -12,7 +12,7 @@ import contextlib
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from typing import Any
 
@@ -29,7 +29,7 @@ from decision_api.config import cfg
 from decision_api.deps import LimiterDep, MakerDep, RuntimeDep, SessionDep, SettingsDep, UserDep
 from decision_api.errors import ApiError
 from decision_api.runtime import Runtime
-from decision_api.services import QueryLogWriter, StreamLimiter, question_hash, questions_today, user_ref
+from decision_api.services import QueryLogWriter, question_hash, reserve_quota, user_ref
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 log = logging.getLogger("decision_api.conversations")
@@ -212,6 +212,8 @@ class AgentEventStream(EventSourceResponse):
     échoue (ClientDisconnect). Dans les deux cas `aclose()` déclenche le `finally` qui annule l'agent.
     """
 
+    on_close: Callable[[], None] | None = None
+
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         try:
             await super().__call__(scope, receive, send)
@@ -220,13 +222,15 @@ class AgentEventStream(EventSourceResponse):
             if aclose is not None:
                 with contextlib.suppress(Exception):
                     await aclose()
+            if self.on_close is not None:  # générateur jamais démarré : libère quand même le créneau
+                self.on_close()
 
 
 async def _stream_answer(
     *,
     runtime: Runtime,
     maker: async_sessionmaker[AsyncSession],
-    limiter: StreamLimiter,
+    release: Callable[[], None],
     user: User,
     conversation_id: uuid.UUID,
     question: str,
@@ -234,14 +238,9 @@ async def _stream_answer(
     state: ResolvedState | None,
     trace_id: str,
     writer: QueryLogWriter,
-    stream_limit: int,
     set_title: bool,
 ) -> AsyncIterator[bytes]:
-    try:
-        limiter.acquire(user.sub, stream_limit)
-    except ApiError as exc:
-        yield _sse("error", {"code": exc.code, "message": exc.message, "trace_id": trace_id})
-        return
+    """Le créneau de flux est acquis par l'appelant AVANT le quota ; `release` le libère (idempotent)."""
     queue: asyncio.Queue[Any] = asyncio.Queue()
     task: asyncio.Task[AssistantMessage] | None = None
     started = time.monotonic()
@@ -297,7 +296,7 @@ async def _stream_answer(
         if task is not None and not task.done():
             task.cancel()
             log.info("flux interrompu par le client : agent annulé", extra={"trace_id": trace_id})
-        limiter.release(user.sub)
+        release()
 
 
 async def _store_assistant(
@@ -355,45 +354,55 @@ async def ask(
     if not runtime.agent_ready:
         raise ApiError(503, "service_unavailable", "L'agent est momentanément indisponible.")
 
-    stream_limit = int(cfg(semantic, "quota.concurrent_streams_per_user", 2))
-    if limiter.active(user.sub) >= stream_limit:
-        raise ApiError(429, "too_many_streams", "Trop de questions en cours ; attendez la fin d'une réponse.")
-    daily = int(cfg(semantic, "quota.questions_per_user_per_day", 200))
-    if await questions_today(session, user.sub) >= daily:
-        raise ApiError(429, "quota_exceeded", "Quota quotidien de questions atteint.")
-
     exchanges = int(cfg(semantic, "agent.history_exchanges", 6))
     history, state = await load_context(session, conversation_id, exchanges)
     await session.rollback()  # termine la transaction de lecture implicite
-    async with session.begin():
-        await session.execute(
-            insert(m.message).values(
-                id=uuid.uuid4(), conversation_id=conversation_id, role="user", content=question
-            )
-        )
 
-    trace_id = uuid.uuid4().hex
-    key = settings.log_pseudonym_key.get_secret_value()
-    writer = QueryLogWriter(
-        maker,
-        user_ref=user_ref(key, user.sub),
-        conversation_id=conversation_id,
-        question_hash=question_hash(key, question),
-    )
-    stream = _stream_answer(
-        runtime=runtime,
-        maker=maker,
-        limiter=limiter,
-        user=user,
-        conversation_id=conversation_id,
-        question=question,
-        history=history,
-        state=state,
-        trace_id=trace_id,
-        writer=writer,
-        stream_limit=stream_limit,
-        set_title=conv.title is None,
-    )
-    return AgentEventStream(
-        stream, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Trace-Id": trace_id}
-    )
+    # Créneau de flux d'abord (mémoire, sans attente), puis quota et message sous verrou par
+    # utilisateur : jamais de message `user` enregistré sans flux pour y répondre, et jamais deux
+    # questions simultanées comptées sur le même solde.
+    stream_limit = int(cfg(semantic, "quota.concurrent_streams_per_user", 2))
+    release = limiter.slot(user.sub, stream_limit)
+    try:
+        trace_id = uuid.uuid4().hex
+        key = settings.log_pseudonym_key.get_secret_value()
+        ref = user_ref(key, user.sub)
+        qhash = question_hash(key, question)
+        daily = int(cfg(semantic, "quota.questions_per_user_per_day", 200))
+        async with session.begin():
+            await reserve_quota(
+                session,
+                ref=ref,
+                daily=daily,
+                kind="question",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                question_hash=qhash,
+            )
+            await session.execute(
+                insert(m.message).values(
+                    id=uuid.uuid4(), conversation_id=conversation_id, role="user", content=question
+                )
+            )
+        writer = QueryLogWriter(maker, user_ref=ref, conversation_id=conversation_id, question_hash=qhash)
+        stream = _stream_answer(
+            runtime=runtime,
+            maker=maker,
+            release=release,
+            user=user,
+            conversation_id=conversation_id,
+            question=question,
+            history=history,
+            state=state,
+            trace_id=trace_id,
+            writer=writer,
+            set_title=conv.title is None,
+        )
+        response = AgentEventStream(
+            stream, headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Trace-Id": trace_id}
+        )
+        response.on_close = release
+        return response
+    except BaseException:
+        release()
+        raise

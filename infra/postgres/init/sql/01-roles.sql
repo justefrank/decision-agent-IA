@@ -10,6 +10,8 @@ CREATE DATABASE warehouse OWNER postgres;
 CREATE DATABASE keycloak OWNER keycloak;
 REVOKE ALL ON DATABASE warehouse FROM PUBLIC;
 REVOKE ALL ON DATABASE keycloak FROM PUBLIC;
+-- Base de maintenance « postgres » : réservée au superutilisateur (aucun rôle applicatif n'y entre).
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 GRANT CONNECT ON DATABASE warehouse TO dbt_owner, app_owner, app_rw, agent_ro_base;
 -- dbt_owner : tables temporaires nécessaires aux tests unitaires dbt (jamais pour agent_ro).
 GRANT TEMPORARY ON DATABASE warehouse TO dbt_owner;

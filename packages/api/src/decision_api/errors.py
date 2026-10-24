@@ -7,6 +7,7 @@ Aucune exception Postgres ni trace Python n'est renvoyée au client : elles sont
 from __future__ import annotations
 
 import logging
+from http import HTTPStatus
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -36,9 +37,18 @@ _DEFAULT_MESSAGES = {
     403: "Accès refusé.",
     404: "Ressource introuvable.",
     405: "Méthode non autorisée.",
+    413: "Requête trop volumineuse.",
+    429: "Trop de requêtes.",
     500: "Erreur interne.",
     503: "Service momentanément indisponible.",
 }
+
+
+def _phrase(status: int) -> str | None:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return None
 
 
 class ApiError(Exception):
@@ -85,6 +95,8 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         status = exc.status_code
         message = exc.detail if isinstance(exc.detail, str) and status < 500 else None
+        if message is not None and message == _phrase(status):
+            message = None  # « Not Found », « Method Not Allowed »… : message français par défaut
         return _resp(
             request,
             status,

@@ -232,7 +232,10 @@ async def audit_queries(
     total = (await session.execute(select(func.count()).select_from(summary))).scalar_one()
     rows = (
         await session.execute(
-            select(summary).order_by(summary.c.ts.desc()).limit(page_size).offset((page - 1) * page_size)
+            select(summary)
+            .order_by(summary.c.ts.desc(), summary.c.trace_id.desc())  # départage stable entre pages
+            .limit(page_size)
+            .offset((page - 1) * page_size)
         )
     ).all()
     await session.rollback()
@@ -289,9 +292,13 @@ async def audit_export(
     )
 
 
+_CSV_CONTROL = ("\t", "\r", "\n")
+_CSV_FORMULA = ("=", "+", "-", "@", "|")
+
+
 def _csv_safe(value: Any) -> Any:
-    """Neutralise l'injection de formules dans un tableur."""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+    """Neutralise l'injection de formules dans un tableur (y compris derrière des espaces initiaux)."""
+    if isinstance(value, str) and (value.startswith(_CSV_CONTROL) or value.lstrip().startswith(_CSV_FORMULA)):
         return "'" + value
     return value
 

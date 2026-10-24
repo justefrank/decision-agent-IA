@@ -17,6 +17,6 @@ async def test_default_runtime_degraded_when_mcp_cannot_start(settings_factory):
     )
     async with asyncio.timeout(20):
         async with default_runtime(settings, load_semantic(ROOT / "semantic")) as rt:
-            assert rt.tools is None and not rt.agent_ready
+            assert not rt.mcp_ready and not rt.agent_ready
             assert any("MCP" in e for e in rt.startup_errors)
             assert rt.llm is not None  # AnthropicClient construit sans appel réseau

@@ -25,7 +25,10 @@ def dev_dir(tmp_path, monkeypatch):
 async def test_dev_token_validated_by_file_jwks(dev_dir, capsys):
     assert cli.main(["dev-token", "--role", "analyste", "--quiet"]) == 0
     token = capsys.readouterr().out.strip()
-    settings = ApiSettings(keycloak_jwks_url=f"file://{dev_dir / 'jwks.json'}", environment="dev")
+    # Le jeton porte amr=otp : valide même avec REQUIRE_MFA_CLAIM=true pour un analyste.
+    settings = ApiSettings(
+        keycloak_jwks_url=f"file://{dev_dir / 'jwks.json'}", environment="dev", require_mfa_claim=True
+    )
     user = await TokenValidator(settings).validate(token)
     assert user.sub == "dev-analyste" and set(user.roles) == {"analyste"}
     # la clé est réutilisée : un second jeton reste valide avec le même JWKS

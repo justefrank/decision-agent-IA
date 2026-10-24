@@ -110,11 +110,14 @@ class JWKSCache:
             expired = now - self._loaded_at > self.ttl_s
             if kid in self._keys and not expired:
                 return self._keys[kid]
-            if expired or now - self._last_attempt >= self.refresh_min_interval_s:
+            # Au plus un téléchargement par `refresh_min_interval_s`, y compris après un échec ou à
+            # l'expiration du cache : un JWKS indisponible ne provoque pas un appel par requête.
+            # En cas d'échec, les clés déjà connues (périmées) restent servies.
+            if now - self._last_attempt >= self.refresh_min_interval_s:
                 try:
                     await self._fetch()
                 except (httpx.HTTPError, ValueError, OSError):
-                    log.error("JWKS indisponible")
+                    log.error("JWKS indisponible : clés en cache conservées")
             return self._keys.get(kid)
 
 
@@ -127,6 +130,8 @@ class TokenValidator:
             raise RuntimeError("JWKS local (file://) interdit en production : utiliser Keycloak.")
         self.jwks = jwks or JWKSCache(settings.jwks_url)
         self.leeway_s = 10
+        self.require_mfa = settings.mfa_required
+        self.mfa_min_acr = settings.mfa_min_acr
 
     async def validate(self, token: str) -> User:
         try:
@@ -159,6 +164,12 @@ class TokenValidator:
         client = access.get(self.client_id) if isinstance(access, dict) else None
         raw_roles = client.get("roles", []) if isinstance(client, dict) else []
         roles = frozenset(r for r in raw_roles if r in KNOWN_ROLES)
+        if self.require_mfa and roles & MFA_ROLES and not has_mfa(claims, self.mfa_min_acr):
+            raise ApiError(
+                403,
+                "mfa_required",
+                "Authentification à deux facteurs requise pour ce rôle : reconnectez-vous avec votre code.",
+            )
         return User(
             sub=str(claims["sub"]),
             roles=roles,
@@ -166,6 +177,25 @@ class TokenValidator:
             email=claims.get("email"),
             claims=claims,
         )
+
+
+MFA_ROLES = frozenset({"analyste", "admin"})
+_MFA_AMR = frozenset({"otp", "mfa", "hwk", "swk"})
+
+
+def has_mfa(claims: dict[str, Any], min_acr: int) -> bool:
+    """Preuve d'un second facteur dans le jeton : `amr` (mapper AMR de Keycloak, valeur « otp » posée
+    par la configuration de l'authentificateur OTP) ou `acr` numérique ≥ `min_acr` (niveaux LoA)."""
+    amr = claims.get("amr")
+    if isinstance(amr, str):
+        amr = [amr]
+    if isinstance(amr, list) and any(isinstance(v, str) and v.lower() in _MFA_AMR for v in amr):
+        return True
+    acr = claims.get("acr")
+    try:
+        return acr is not None and int(str(acr)) >= min_acr
+    except ValueError:
+        return False
 
 
 def _unauthorized(message: str) -> ApiError:

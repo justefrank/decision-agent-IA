@@ -2,11 +2,16 @@
 # l'API et Keycloak ; Postgres 17 (bases warehouse et keycloak) ; Mailpit en profil dev.
 #
 #   make secrets            # crée infra/secrets/*.txt (aléatoires, ignorés par git)
-#   docker compose -f infra/compose.yaml --profile dev up -d --build
-#   make seed PG_PORT=5432  # générateur → raw → dbt build (depuis l'hôte)
+#   make compose-up         # = docker compose -f infra/compose.yaml --profile dev up -d --build
+#   make seed PG_PORT=5432 DBT_PG_PASSWORD="$(cat infra/secrets/dbt_owner_password.txt)"
 #
+# Les migrations Alembic (service « migrate ») s'exécutent à chaque démarrage, avant l'API.
 # Versions figées ; les monter explicitement (revue de compatibilité, ENF11).
 name: decision
+
+x-api-build: &api-build
+  context: ..
+  dockerfile: infra/api.Dockerfile
 
 services:
   postgres:
@@ -31,9 +36,13 @@ services:
       - ./postgres/init/00-roles.sh:/docker-entrypoint-initdb.d/00-roles.sh:ro
       - ./postgres/init/sql:/docker-entrypoint-initdb.d/sql:ro
     ports:
-      - "127.0.0.1:${PG_PORT:-5432}:5432"   # pour make seed / migrate depuis l'hôte seulement
+      # Pour make seed / rights-test depuis l'hôte seulement. Variable distincte de PG_PORT (exporté
+      # par le Makefile pour le Postgres local de développement).
+      - "127.0.0.1:${PG_PUBLISH_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d warehouse"]
+      # -h 127.0.0.1 : pendant l'initialisation, le serveur n'écoute que sur le socket Unix ;
+      # le service n'est donc « healthy » qu'une fois les scripts d'init terminés.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d warehouse"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -56,72 +65,51 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_HOSTNAME: https://${PUBLIC_HOST:-localhost}/auth
+      # Console d'administration servie seulement sur l'adresse du tunnel SSH (le proxy public
+      # renvoie 404 sur /auth/admin et /auth/realms/master) : voir README, « Administration ».
+      KC_HOSTNAME_ADMIN: http://localhost:${KC_ADMIN_PORT:-8081}/auth
       KC_HTTP_RELATIVE_PATH: /auth
+      # Interface de gestion (port 9000 : santé). Par défaut elle hérite de http-relative-path ;
+      # fixé explicitement pour que le chemin du healthcheck ci-dessous (/auth/health/ready) ne
+      # dépende pas de cette règle d'héritage.
+      KC_HTTP_MANAGEMENT_RELATIVE_PATH: /auth
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "false"
+      # Substitué dans le realm importé (redirectUris, webOrigins, rootUrl : ${PUBLIC_HOST}).
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
       # Administrateur temporaire du realm master : à remplacer par un compte nominatif avec MFA
       # puis à supprimer (le realm « decision » n'a aucun utilisateur à mot de passe fixe).
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin-temporaire}
     secrets:
       - keycloak_db_password
       - keycloak_admin_password
+    ports:
+      # Administration par tunnel SSH seulement (lié à la boucle locale de l'hôte).
+      - "127.0.0.1:${KC_ADMIN_PORT:-8081}:8080"
     volumes:
       # --import-realm n'écrase jamais un realm existant (voir README, réinitialisation).
       - ./keycloak/realm:/opt/keycloak/data/import:ro
     healthcheck:
+      # Code HTTP 200 (prêt) et non la sous-chaîne "UP" : pendant l'amorçage, la réponse 503
+      # {"status":"DOWN","checks":[{"name":"Graceful Shutdown","status":"UP"},…]} contient "UP".
       test:
         - CMD-SHELL
         - >-
           exec 3<>/dev/tcp/127.0.0.1/9000 &&
           printf 'GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
-          grep -q '"UP"' <&3
+          head -n1 <&3 | grep -q ' 200'
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 30s
 
-  api:
-    build:
-      context: ..
-      dockerfile: infra/api.Dockerfile
-    image: decision-api:local
-    restart: unless-stopped
-    depends_on:
-      postgres: {condition: service_healthy}
-      keycloak: {condition: service_healthy}
-    environment:
-      ENVIRONMENT: prod
-      REFERENCE_DATE: ${REFERENCE_DATE:-2026-09-30}
-      PG_HOST: postgres
-      PG_PORT: "5432"
-      PG_DATABASE: warehouse
-      KEYCLOAK_ISSUER: https://${PUBLIC_HOST:-localhost}/auth/realms/decision
-      # JWKS lu sur le réseau interne (l'émetteur reste l'URL publique, fixée par KC_HOSTNAME).
-      KEYCLOAK_JWKS_URL: http://keycloak:8080/auth/realms/decision/protocol/openid-connect/certs
-      KEYCLOAK_AUDIENCE: decision-api
-      KEYCLOAK_CLIENT_ID: decision-web
-      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
-      LLM_EFFORT: ${LLM_EFFORT:-medium}
-      CORS_ORIGINS: ""
-    secrets:
-      - app_rw_password
-      - agent_ro_password
-      - anthropic_api_key
-      - log_pseudonym_key
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # Migrations Alembic (rôle app_owner) : docker compose -f infra/compose.yaml run --rm migrate
+  # Migrations Alembic (rôle app_owner) à chaque démarrage, avant l'API (idempotent : upgrade head).
   migrate:
+    build: *api-build
     image: decision-api:local
-    profiles: [tools]
+    restart: "no"
     depends_on:
       postgres: {condition: service_healthy}
     environment:
@@ -131,6 +119,59 @@ services:
     secrets:
       - app_owner_password
     command: ["alembic", "-c", "/app/packages/api/alembic.ini", "upgrade", "head"]
+
+  api:
+    build: *api-build
+    image: decision-api:local
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    environment:
+      # Production par défaut (Swagger désactivé, MFA exigée dans le jeton, clé de pseudonymisation
+      # vérifiée). Variable distincte d'ENVIRONMENT, que le Makefile exporte depuis .env (dev).
+      ENVIRONMENT: ${API_ENVIRONMENT:-production}
+      REFERENCE_DATE: ${REFERENCE_DATE:-2026-09-30}
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: warehouse
+      # Le DSN agent_ro est construit par l'API à partir de ce fichier (jamais exporté dans
+      # l'environnement du processus) et transmis au seul sous-processus MCP.
+      AGENT_RO_PASSWORD_FILE: /run/secrets/agent_ro_password
+      KEYCLOAK_ISSUER: https://${PUBLIC_HOST:-localhost}/auth/realms/decision
+      # JWKS lu sur le réseau interne (l'émetteur reste l'URL publique, fixée par KC_HOSTNAME).
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/auth/realms/decision/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: decision-api
+      KEYCLOAK_CLIENT_ID: decision-web
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+      LLM_EFFORT: ${LLM_EFFORT:-medium}
+      CORS_ORIGINS: ""
+      RIGHTS_TEST_REPORT: /app/var/reports/rights-test.json
+    secrets:
+      - app_rw_password
+      - agent_ro_password
+      - anthropic_api_key
+      - log_pseudonym_key
+    volumes:
+      # Rapport de `make rights-test` (exécuté depuis l'hôte), lu par /api/admin/security.
+      - ../var/reports:/app/var/reports:ro
+    expose:
+      - "8000"
+    healthcheck:
+      # Sain seulement si status = ok (base, sonde MCP réelle et agent configuré).
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, sys, urllib.request;
+          s = json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4));
+          sys.exit(0 if s.get('status') == 'ok' else 1)
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 30s
 
   proxy:
     image: caddy:2.10.2-alpine
@@ -145,8 +186,10 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # SPA statique compilée (web/dist) ; WEB_DIST pour un autre chemin.
+      # SPA statique compilée (WEB_DIST, défaut web/dist). Sans index.html, Caddy sert la page
+      # d'attente de web-fallback/ (l'interface est à migrer depuis frontend/, voir README).
       - ${WEB_DIST:-../web/dist}:/srv/web:ro
+      - ./web-fallback:/srv/fallback:ro
       - caddy_data:/data
       - caddy_config:/config
 

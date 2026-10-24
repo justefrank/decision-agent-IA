@@ -286,6 +286,20 @@ Résultats d'outils en JSON typé, marqués « données non fiables » ; `nom` e
 - Keycloak en mode production, realm versionné **sans secret ni compte à mot de passe fixe**.
 - Le flux vers le LLM externe (questions, résultats agrégés synthétiques) est documenté ([SRS §2](../SRS.md#2-périmètre)).
 
+### Durcissements issus de la revue de code (2026-10-24)
+
+Détail dans [reviews/2026-10-24-revue-code.md](reviews/2026-10-24-revue-code.md).
+
+- **Quota** : chaque question ou analyse acceptée inscrit une ligne `query_log` (`tool = question | analysis`, `step = 0`) sous `pg_advisory_xact_lock` par utilisateur ; supprimer une conversation ne rend pas de quota. Le limiteur de flux est pris avant le quota.
+- **Analyse du tableau de bord** : comptée dans le quota ; `regenerate` réservé à l'analyste et à l'admin, au plus une génération par minute et par (période, région) ; générations simultanées dédupliquées par verrou ; tuiles en cache mémoire 5 min.
+- **Proxy** : corps limité à 64 Kio (Caddy et middleware ASGI, 413) ; seuls `/auth/realms/decision/*`, `/auth/resources/*` et `/auth/js/*` sont publiés ; console Keycloak sur `127.0.0.1:8081` (tunnel).
+- **MFA** : le flux de réinitialisation applique le même contrôle OTP que la connexion ; avec `REQUIRE_MFA_CLAIM` (vrai en production), l'API refuse un jeton d'analyste ou d'admin sans `otp` dans `amr`.
+- **Santé** : `/api/health` sonde réellement le sous-processus MCP (relancé avec backoff s'il meurt) et signale l'agent indisponible sans clé Claude ; `status = ok | degraded | down`.
+- **Injection indirecte** : le serveur MCP marque `free_text` toute projection issue de `dim_agent.nom` ou `ville` (lignage sur l'AST, alias et fonctions compris) ; l'agent opacifie d'après ce drapeau.
+- **Garde** : mots-clés niladiques (`user`, `current_role`…) refusés ; jointure sans `OR` au premier niveau et avec une égalité entre deux alias distincts.
+- **Données** : le serveur MCP connaît les bornes des données ; une comparaison hors données est refusée, une couverture partielle est signalée ; une comparaison qui chevauche la période courante est refusée.
+- **Secrets** : `AGENT_RO_DSN` n'est plus exporté dans l'environnement de l'API (lu depuis un fichier secret puis transmis au seul sous-processus MCP) ; démarrage refusé en production avec la clé de pseudonymisation par défaut ; purge de `query_log` par `make purge-logs` (`app_owner`).
+
 ## 7. Déploiement
 
 Un seul `docker compose` (`infra/compose.yaml`).

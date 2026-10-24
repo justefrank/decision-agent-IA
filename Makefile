@@ -9,30 +9,38 @@ SHELL := /bin/bash
 
 PG_PORT ?= 55432
 PG_HOST ?= localhost
+PG_DATABASE ?= warehouse
 SCALE ?= 1.0
 SEED ?= 42
 
 # Postgres de développement (scripts/dev_pg.sh) : mot de passe de chaque rôle = son nom.
-DBT_PG_HOST ?= $(PG_HOST)
-DBT_PG_PORT ?= $(PG_PORT)
+# Seuls les COMPOSANTS sont surchargeables (.env, ligne de commande) ; les DSN en sont toujours
+# calculés (affectation simple « = » : un DSN figé dans .env ne masque pas `make seed PG_PORT=…`).
+APP_RW_PASSWORD ?= app_rw
+APP_OWNER_PASSWORD ?= app_owner
+AGENT_RO_PASSWORD ?= agent_ro
 DBT_PG_USER ?= dbt_owner
 DBT_PG_PASSWORD ?= dbt_owner
-DBT_PG_DBNAME ?= warehouse
-DBT_OWNER_DSN ?= postgresql://$(DBT_PG_USER):$(DBT_PG_PASSWORD)@$(DBT_PG_HOST):$(DBT_PG_PORT)/$(DBT_PG_DBNAME)
-AGENT_RO_DSN ?= postgresql://agent_ro:agent_ro@$(PG_HOST):$(PG_PORT)/warehouse
-OWNER_DATABASE_URL ?= postgresql://app_owner:app_owner@$(PG_HOST):$(PG_PORT)/warehouse
-APP_DATABASE_URL ?= postgresql://app_rw:app_rw@$(PG_HOST):$(PG_PORT)/warehouse
+DBT_PG_HOST = $(PG_HOST)
+DBT_PG_PORT = $(PG_PORT)
+DBT_PG_DBNAME = $(PG_DATABASE)
+DBT_OWNER_DSN = postgresql://$(DBT_PG_USER):$(DBT_PG_PASSWORD)@$(DBT_PG_HOST):$(DBT_PG_PORT)/$(DBT_PG_DBNAME)
+AGENT_RO_DSN = postgresql://agent_ro:$(AGENT_RO_PASSWORD)@$(PG_HOST):$(PG_PORT)/$(PG_DATABASE)
+OWNER_DATABASE_URL = postgresql://app_owner:$(APP_OWNER_PASSWORD)@$(PG_HOST):$(PG_PORT)/$(PG_DATABASE)
+APP_DATABASE_URL = postgresql://app_rw:$(APP_RW_PASSWORD)@$(PG_HOST):$(PG_PORT)/$(PG_DATABASE)
+RETENTION_DAYS ?= 90
 
 # dbt isolé de l'espace de travail (versions figées dans warehouse/requirements.txt).
 DBT_PROFILES_DIR := $(CURDIR)/warehouse
 DBT_CORE := $(shell grep -E '^dbt-core==' warehouse/requirements.txt)
 DBT := uvx --python 3.12 --with-requirements warehouse/requirements.txt --from '$(DBT_CORE)' dbt
 DBT_FLAGS := --project-dir warehouse
-RIGHTS_REPORT ?= var/rights-test.json
+RIGHTS_REPORT ?= var/reports/rights-test.json
 COMPOSE := docker compose -f infra/compose.yaml
 
 .PHONY: help sync db-up db-down seed generate dbt-build dbt-run rights-test migrate api eval test \
-        lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user
+        lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user \
+        purge-logs
 
 help: ## Liste des cibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -57,7 +65,7 @@ dbt-run: ## dbt run seul
 
 seed: generate dbt-build ## Générateur → raw → dbt build
 
-rights-test: ## Droits de agent_ro, avant puis après un second dbt run (rapport var/rights-test.json)
+rights-test: ## Droits de agent_ro, avant puis après un second dbt run (rapport var/reports/)
 	uv run python warehouse/scripts/check_agent_ro_rights.py --dsn '$(AGENT_RO_DSN)' \
 	  --phase avant --report $(RIGHTS_REPORT)
 	$(DBT) run $(DBT_FLAGS)
@@ -66,6 +74,9 @@ rights-test: ## Droits de agent_ro, avant puis après un second dbt run (rapport
 
 migrate: ## Migrations Alembic du schéma app (rôle app_owner)
 	uv run alembic -c packages/api/alembic.ini upgrade head
+
+purge-logs: ## Purge app.query_log au-delà de RETENTION_DAYS (90 j) avec app_owner (tâche planifiée)
+	uv run python -m decision_api.cli purge-logs --days $(RETENTION_DAYS)
 
 api: ## API en développement (uvicorn, rechargement)
 	uv run uvicorn decision_api.main:app --reload --host 127.0.0.1 --port 8000
@@ -89,7 +100,8 @@ secrets: ## Crée les secrets Docker manquants (infra/secrets/*.txt, aléatoires
 	@f=infra/secrets/anthropic_api_key.txt; if [ ! -f $$f ]; then (umask 077; : > $$f); \
 	  echo "créé $$f (vide : y mettre la clé API Claude)"; fi
 
-compose-up: secrets ## Lance la pile compose (profil dev : Mailpit)
+compose-up: secrets ## Lance la pile compose (profil dev : Mailpit) ; migrations avant l'API
+	@mkdir -p var/reports
 	$(COMPOSE) --profile dev up -d --build
 
 compose-down: ## Arrête la pile compose

@@ -123,11 +123,13 @@ async def test_query_log_written_and_append_only(ctx, sse):
     r = await ctx.ask(cid, "Volume en septembre ?", h)
     trace = r.headers["x-trace-id"]
     rows = await _owner_fetch(ctx, "SELECT * FROM app.query_log WHERE trace_id = $1 ORDER BY step", trace)
-    assert [x["tool"] for x in rows] == ["query_metric", "query_metric", "llm"]
+    # step 0 : inscription de la question (quota), puis les appels de l'agent
+    assert [x["tool"] for x in rows] == ["question", "query_metric", "query_metric", "llm"]
     assert all(x["user_ref"] and x["user_ref"] != "alice" and len(x["user_ref"]) == 64 for x in rows)
     assert rows[0]["question_hash"] and "Volume" not in json.dumps([dict(x) for x in rows], default=str)
+    assert rows[0]["question_hash"] == rows[1]["question_hash"]
     assert str(rows[0]["conversation_id"]) == cid
-    assert float(rows[2]["cost_usd"]) == pytest.approx(0.0021)
+    assert float(rows[3]["cost_usd"]) == pytest.approx(0.0021)
 
     conn = await asyncpg.connect(ctx.pg["app"])  # rôle de l'API
     try:
@@ -179,6 +181,10 @@ async def test_concurrent_stream_limit(ctx):
     limiter.acquire("alice", 10)
     r = await ctx.ask(cid, "Volume ?", h)
     assert r.status_code == 429 and r.json()["error"]["code"] == "too_many_streams"
+    # Refus du limiteur AVANT le quota : ni message `user` orphelin, ni question imputée.
+    conv = (await ctx.client.get(f"/api/conversations/{cid}", headers=h)).json()
+    assert conv["messages"] == []
+    assert (await _owner_fetch(ctx, "SELECT count(*) AS n FROM app.query_log"))[0]["n"] == 0
     limiter.release("alice")
     limiter.release("alice")
     assert (await ctx.ask(cid, "Volume ?", h)).status_code == 200
@@ -199,10 +205,11 @@ async def test_client_disconnect_cancels_agent(ctx):
     from decision_api.auth import User
 
     user = User(sub="alice", roles=frozenset(DEC))
+    release = limiter.slot("alice", 2)
     gen = _stream_answer(
         runtime=runtime,
         maker=maker,
-        limiter=limiter,
+        release=release,
         user=user,
         conversation_id=cid,
         question="q",
@@ -210,7 +217,6 @@ async def test_client_disconnect_cancels_agent(ctx):
         state=None,
         trace_id="t-cancel",
         writer=QueryLogWriter(maker, user_ref="r", conversation_id=cid, question_hash="h"),
-        stream_limit=2,
         set_title=False,
     )
     first = await gen.__anext__()
@@ -247,15 +253,24 @@ async def test_dashboard_and_analysis_reuse(ctx):
     assert a1["reused"] is False and a1["analysis"]["lead"]
     a2 = (await ctx.client.post("/api/dashboard/analysis", json=body, headers=h)).json()
     assert a2["reused"] is True and a2["id"] == a1["id"]
+    # Régénération : refusée au décideur, réservée à l'analyste et à l'admin
+    r = await ctx.client.post("/api/dashboard/analysis", json={**body, "regenerate": True}, headers=h)
+    assert r.status_code == 403
+    an = ctx.h("ana", ANA)
+    ctx.app.state.settings.analysis_regenerate_min_interval_s = 0
     a3 = (
-        await ctx.client.post("/api/dashboard/analysis", json={**body, "regenerate": True}, headers=h)
+        await ctx.client.post("/api/dashboard/analysis", json={**body, "regenerate": True}, headers=an)
     ).json()
     assert a3["reused"] is False and a3["id"] != a1["id"]
     assert ctx.services.analyses == 2
     rows = await _owner_fetch(ctx, "SELECT count(*) AS n FROM app.analysis")
     assert rows[0]["n"] == 2
-    logs = await _owner_fetch(ctx, "SELECT trace_id FROM app.query_log WHERE conversation_id IS NULL")
+    logs = await _owner_fetch(
+        ctx, "SELECT trace_id FROM app.query_log WHERE conversation_id IS NULL AND tool = 'llm'"
+    )
     assert len(logs) == 2
+    marks = await _owner_fetch(ctx, "SELECT count(*) AS n FROM app.query_log WHERE tool = 'analysis'")
+    assert marks[0]["n"] == 2  # chaque génération est imputée au quota
     stored = await _owner_fetch(ctx, "SELECT trace_id FROM app.analysis ORDER BY ts")
     assert {x["trace_id"] for x in stored} == {x["trace_id"] for x in logs}
 
@@ -355,7 +370,8 @@ async def test_audit_list_detail_and_access_log(ctx, sse):
 
     detail = await ctx.client.get(f"/api/admin/audit/queries/{trace}", headers=an)
     assert detail.status_code == 200
-    assert [s["step"] for s in detail.json()["steps"]] == [1, 2, 3]
+    assert [s["step"] for s in detail.json()["steps"]] == [0, 1, 2, 3]
+    assert detail.json()["steps"][0]["tool"] == "question"
     assert "confidentielle" not in detail.text
     logs = await _owner_fetch(ctx, "SELECT * FROM app.audit_access_log")
     assert len(logs) == 1 and logs[0]["action"] == "audit_detail" and logs[0]["target_trace_id"] == trace
@@ -366,7 +382,7 @@ async def test_audit_list_detail_and_access_log(ctx, sse):
     assert filt.json()["total"] == 0
     csv = await ctx.client.get("/api/admin/audit/queries/export.csv", headers=an)
     assert csv.status_code == 200 and csv.headers["content-type"].startswith("text/csv")
-    assert len(csv.text.strip().splitlines()) == 4 and "question_hash" in csv.text.splitlines()[0]
+    assert len(csv.text.strip().splitlines()) == 5 and "question_hash" in csv.text.splitlines()[0]
     actions = [
         x["action"] for x in await _owner_fetch(ctx, "SELECT action FROM app.audit_access_log ORDER BY id")
     ]
@@ -446,3 +462,133 @@ async def test_db_errors_do_not_leak(ctx, monkeypatch):
     r = await ctx.client.get(f"/api/conversations/{uuid.uuid4()}", headers=h)
     assert r.status_code == 500
     assert r.json()["error"]["code"] == "internal_error" and "app." not in r.text and "SELECT" not in r.text
+
+
+# --- Correctifs de revue : quota, analyse, pagination, purge ----------------------------------
+
+
+async def test_quota_survives_conversation_deletion(ctx, monkeypatch):
+    sem = ctx.app.state.runtime.semantic
+    monkeypatch.setitem(sem.config["quota"], "questions_per_user_per_day", 2)
+    h = ctx.h("alice", DEC)
+    for _ in range(2):
+        cid = await ctx.new_conv(h)
+        assert (await ctx.ask(cid, "Volume ?", h)).status_code == 200
+        assert (await ctx.client.delete(f"/api/conversations/{cid}", headers=h)).status_code == 204
+    # Supprimer les conversations ne rend pas de quota : le compte vit dans query_log (ajout seul).
+    cid = await ctx.new_conv(h)
+    r = await ctx.ask(cid, "Volume ?", h)
+    assert r.status_code == 429 and r.json()["error"]["code"] == "quota_exceeded"
+    conv = (await ctx.client.get(f"/api/conversations/{cid}", headers=h)).json()
+    assert conv["messages"] == []  # refus : aucun message user enregistré
+
+
+async def test_quota_concurrent_requests_serialised(ctx, monkeypatch):
+    sem = ctx.app.state.runtime.semantic
+    monkeypatch.setitem(sem.config["quota"], "questions_per_user_per_day", 3)
+    monkeypatch.setitem(sem.config["quota"], "concurrent_streams_per_user", 50)
+    h = ctx.h("alice", DEC)
+    cids = [await ctx.new_conv(h) for _ in range(10)]
+    results = await asyncio.gather(*(ctx.ask(cid, "Volume ?", h) for cid in cids))
+    codes = sorted(r.status_code for r in results)
+    assert codes == [200] * 3 + [429] * 7  # verrou consultatif : ni dépassement ni course
+    rows = await _owner_fetch(ctx, "SELECT count(*) AS n FROM app.message WHERE role = 'user'")
+    assert rows[0]["n"] == 3
+    assert ctx.app.state.stream_limiter.active("alice") == 0
+
+
+async def test_analysis_counts_in_quota_and_uses_stream_limiter(ctx, monkeypatch):
+    sem = ctx.app.state.runtime.semantic
+    monkeypatch.setitem(sem.config["quota"], "questions_per_user_per_day", 1)
+    h = ctx.h("alice", DEC)
+    r = await ctx.client.post("/api/dashboard/analysis", json={"period": "2026-08"}, headers=h)
+    assert r.status_code == 200 and r.json()["reused"] is False
+    # Analyse réutilisée : gratuite.
+    r = await ctx.client.post("/api/dashboard/analysis", json={"period": "2026-08"}, headers=h)
+    assert r.status_code == 200 and r.json()["reused"] is True
+    r = await ctx.client.post("/api/dashboard/analysis", json={"period": "2026-07"}, headers=h)
+    assert r.status_code == 429 and r.json()["error"]["code"] == "quota_exceeded"
+    r = await ctx.ask(await ctx.new_conv(h), "Volume ?", h)
+    assert r.status_code == 429
+    # Limiteur de flux : plein, la génération est refusée avant toute imputation.
+    limiter = ctx.app.state.stream_limiter
+    hb = ctx.h("bob", ANA)
+    limiter.acquire("bob", 10)
+    limiter.acquire("bob", 10)
+    r = await ctx.client.post("/api/dashboard/analysis", json={"period": "2026-06"}, headers=hb)
+    assert r.status_code == 429 and r.json()["error"]["code"] == "too_many_streams"
+    limiter.release("bob")
+    limiter.release("bob")
+
+
+async def test_analysis_regenerate_min_interval_and_dedup(ctx):
+    an = ctx.h("ana", ANA)
+    body = {"period": "2026-08", "region": "Dakar"}
+    a1 = (await ctx.client.post("/api/dashboard/analysis", json=body, headers=an)).json()
+    # Régénération dans le délai minimal (60 s) : l'analyse existante est renvoyée, sans génération.
+    a2 = (
+        await ctx.client.post("/api/dashboard/analysis", json={**body, "regenerate": True}, headers=an)
+    ).json()
+    assert a2["reused"] is True and a2["id"] == a1["id"] and ctx.services.analyses == 1
+    # Générations concurrentes pour la même clé : une seule (verrou consultatif).
+    body2 = {"period": "2026-07", "region": "Dakar"}
+    rs = await asyncio.gather(
+        *(
+            ctx.client.post("/api/dashboard/analysis", json=body2, headers=ctx.h(f"u{i}", DEC))
+            for i in range(4)
+        )
+    )
+    assert all(r.status_code == 200 for r in rs)
+    assert len({r.json()["id"] for r in rs}) == 1 and ctx.services.analyses == 2
+
+
+async def test_audit_pagination_stable_tiebreak(ctx):
+    conn = await asyncpg.connect(ctx.pg["app"])
+    try:
+        await conn.executemany(
+            "INSERT INTO app.query_log (ts, trace_id, step, tool, status, duration_ms) "
+            "VALUES ('2026-09-01T00:00:00Z', $1, 1, 'run_query', 'ok', 1)",
+            [(f"t{i:02d}",) for i in range(25)],
+        )
+    finally:
+        await conn.close()
+    an = ctx.h("ana", ANA)
+    seen: list[str] = []
+    for page in (1, 2, 3):
+        r = await ctx.client.get(
+            "/api/admin/audit/queries", params={"page": page, "page_size": 10}, headers=an
+        )
+        seen += [i["trace_id"] for i in r.json()["items"]]
+    assert len(seen) == 25 and len(set(seen)) == 25  # ts identiques : départage par trace_id
+
+
+async def test_purge_logs_owner_only(ctx, monkeypatch, capsys):
+    from decision_api import cli
+
+    conn = await asyncpg.connect(ctx.pg["app"])
+    try:
+        await conn.execute(
+            "INSERT INTO app.query_log (ts, trace_id, step, tool, status, duration_ms) VALUES "
+            "(now() - interval '91 days', 'vieux', 1, 'llm', 'ok', 1), (now(), 'recent', 1, 'llm', 'ok', 1)"
+        )
+    finally:
+        await conn.close()
+    # app_rw (rôle de l'API) : DELETE refusé.
+    monkeypatch.setenv("OWNER_DATABASE_URL", ctx.pg["app"])
+    assert await asyncio.to_thread(cli.main, ["purge-logs"]) == 2
+    assert "app_owner" in capsys.readouterr().err
+    monkeypatch.setenv("OWNER_DATABASE_URL", ctx.pg["owner"])
+    assert await asyncio.to_thread(cli.main, ["purge-logs", "--days", "90"]) == 0
+    assert "1 ligne" in capsys.readouterr().out
+    rows = await _owner_fetch(ctx, "SELECT trace_id FROM app.query_log")
+    assert [r["trace_id"] for r in rows] == ["recent"]
+
+
+async def test_health_degraded_when_mcp_down(ctx):
+    r = await ctx.client.get("/api/health")
+    assert r.json()["status"] == "ok"
+    rt = ctx.app.state.runtime
+    rt.tools = None  # MCP indisponible
+    r = await ctx.client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {**r.json(), "status": "degraded", "db": "ok", "mcp": "down", "agent": "down"}

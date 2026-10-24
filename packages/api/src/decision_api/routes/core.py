@@ -30,14 +30,36 @@ async def check_db(request: Request) -> bool:
 
 
 async def health_snapshot(request: Request) -> dict[str, Any]:
+    """État réel : requête SQL, sonde MCP (list_tools, délai court), agent configuré.
+
+    `status` : `ok` si tout fonctionne, `down` si la base est injoignable (l'API ne sert plus rien),
+    `degraded` sinon (base joignable mais MCP ou agent indisponible : questions refusées en 503).
+    """
     runtime = getattr(request.app.state, "runtime", None)
     db_ok = await check_db(request)
-    mcp_ok = bool(runtime and runtime.mcp_ready)
-    agent_ok = bool(runtime and runtime.agent_ready)
+    mcp_ok = False
+    if runtime is not None:
+        try:
+            mcp_ok = await runtime.probe_mcp()
+        except Exception:  # noqa: BLE001
+            log.warning("sonde MCP en échec")
+    agent_ok = bool(runtime and runtime.agent_ready and mcp_ok)
+    if not db_ok:
+        status = "down"
+    elif mcp_ok and agent_ok:
+        status = "ok"
+    else:
+        status = "degraded"
+    if mcp_ok:
+        mcp = "ok"
+    elif runtime is not None and runtime.mcp_state in ("starting", "restarting"):
+        mcp = "restarting"
+    else:
+        mcp = "down"
     return {
-        "status": "ok" if db_ok and mcp_ok and agent_ok else "degraded",
+        "status": status,
         "db": "ok" if db_ok else "down",
-        "mcp": "ok" if mcp_ok else "down",
+        "mcp": mcp,
         "agent": "ok" if agent_ok else "down",
         "semantic_version": runtime.semantic.version if runtime else None,
     }
@@ -46,7 +68,7 @@ async def health_snapshot(request: Request) -> dict[str, Any]:
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
     snap = await health_snapshot(request)
-    return JSONResponse(snap, status_code=200 if snap["db"] == "ok" else 503)
+    return JSONResponse(snap, status_code=503 if snap["status"] == "down" else 200)
 
 
 @router.get("/me")

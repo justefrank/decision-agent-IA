@@ -7,14 +7,16 @@ import hashlib
 import hmac
 import json
 import re
+import time
 import unicodedata
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 
 from decision_core.models import Period, QueryLogRecord
-from sqlalchemy import func, insert, literal_column, select
+from sqlalchemy import func, insert, literal_column, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from decision_api import models as m
@@ -76,19 +78,59 @@ class QueryLogWriter:
 # --- Quotas -----------------------------------------------------------------------------------
 
 
-async def questions_today(session: AsyncSession, sub: str) -> int:
-    """Questions posées depuis minuit (UTC, fuseau de Dakar) : calcul dans Postgres, sans cache."""
+# Lignes de query_log qui comptent dans le quota quotidien : une par question acceptée, une par analyse
+# du tableau de bord générée. Le journal est en ajout seul pour app_rw et survit à la suppression
+# des conversations : supprimer une conversation ne rend pas de quota.
+QUOTA_TOOLS = ("question", "analysis")
+_DAY_START = "(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+
+
+async def usage_today(session: AsyncSession, ref: str) -> int:
+    """Questions et analyses imputées depuis minuit UTC (fuseau de Dakar), calculées dans Postgres."""
+    ql = m.query_log.c
     stmt = (
         select(func.count())
-        .select_from(m.message.join(m.conversation, m.message.c.conversation_id == m.conversation.c.id))
-        .where(
-            m.conversation.c.user_id == sub,
-            m.message.c.role == "user",
-            m.message.c.created_at
-            >= literal_column("(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"),
-        )
+        .select_from(m.query_log)
+        .where(ql.user_ref == ref, ql.tool.in_(QUOTA_TOOLS), ql.ts >= literal_column(_DAY_START))
     )
     return int((await session.execute(stmt)).scalar_one())
+
+
+async def reserve_quota(
+    session: AsyncSession,
+    *,
+    ref: str,
+    daily: int,
+    kind: str,
+    trace_id: str,
+    conversation_id: uuid.UUID | None = None,
+    question_hash: str | None = None,
+) -> None:
+    """Dans la transaction ouverte : verrou consultatif par utilisateur, comptage puis inscription.
+
+    Le verrou (`pg_advisory_xact_lock`, libéré à la fin de la transaction) sérialise les requêtes
+    simultanées d'un même utilisateur : deux questions parallèles ne peuvent pas lire le même compte
+    puis s'inscrire toutes les deux au-delà de la limite.
+    """
+    if kind not in QUOTA_TOOLS:
+        raise ValueError(kind)
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": "quota:" + ref}
+    )
+    if await usage_today(session, ref) >= daily:
+        raise ApiError(429, "quota_exceeded", "Quota quotidien de questions atteint.")
+    await session.execute(
+        insert(m.query_log).values(
+            trace_id=trace_id,
+            step=0,
+            tool=kind,
+            status="ok",
+            duration_ms=0,
+            user_ref=ref,
+            conversation_id=conversation_id,
+            question_hash=question_hash,
+        )
+    )
 
 
 class StreamLimiter:
@@ -115,6 +157,48 @@ class StreamLimiter:
         self._active[sub] = max(0, self._active[sub] - 1)
         if self._active[sub] == 0:
             self._active.pop(sub, None)
+
+    def slot(self, sub: str, limit: int) -> Callable[[], None]:
+        """Acquiert un créneau et renvoie une fonction de libération idempotente."""
+        self.acquire(sub, limit)
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                self.release(sub)
+
+        return release
+
+
+class TTLCache:
+    """Petit cache mémoire à durée de vie (tuiles du tableau de bord), borné en nombre d'entrées."""
+
+    def __init__(self, ttl_s: float, max_entries: int = 256) -> None:
+        self.ttl_s = ttl_s
+        self.max_entries = max_entries
+        self._data: dict[Any, tuple[float, Any]] = {}
+
+    def get(self, key: Any) -> Any | None:
+        item = self._data.get(key)
+        if item is None:
+            return None
+        if time.monotonic() - item[0] > self.ttl_s:
+            self._data.pop(key, None)
+            return None
+        return item[1]
+
+    def set(self, key: Any, value: Any) -> None:
+        if self.ttl_s <= 0:
+            return
+        if len(self._data) >= self.max_entries and key not in self._data:
+            oldest = min(self._data, key=lambda k: self._data[k][0])
+            self._data.pop(oldest, None)
+        self._data[key] = (time.monotonic(), value)
+
+    def clear(self) -> None:
+        self._data.clear()
 
 
 # --- Périodes du tableau de bord ---------------------------------------------------------------

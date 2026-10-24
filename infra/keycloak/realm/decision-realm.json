@@ -48,6 +48,7 @@
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": false,
   "browserFlow": "decision-browser",
+  "resetCredentialsFlow": "decision-reset-credentials",
   "smtpServer": {
     "host": "mailpit",
     "port": "1025",
@@ -328,6 +329,28 @@
       ]
     },
     {
+      "name": "amr",
+      "description": "Méthodes d'authentification (amr : pwd, otp), vérifiées par l'API pour analyste et admin",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "decision-api-audience",
       "description": "Ajoute aud = decision-api au jeton d'accès (vérifié par l'API)",
       "protocol": "openid-connect",
@@ -358,7 +381,8 @@
     "profile",
     "email",
     "web-origins",
-    "acr"
+    "acr",
+    "amr"
   ],
   "defaultOptionalClientScopes": [],
   "clients": [
@@ -375,17 +399,17 @@
       "serviceAccountsEnabled": false,
       "frontchannelLogout": true,
       "fullScopeAllowed": false,
-      "rootUrl": "https://localhost",
+      "rootUrl": "https://${PUBLIC_HOST}",
       "baseUrl": "/",
       "redirectUris": [
-        "https://localhost/*"
+        "https://${PUBLIC_HOST}/*"
       ],
       "webOrigins": [
-        "https://localhost"
+        "https://${PUBLIC_HOST}"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "https://localhost/*",
+        "post.logout.redirect.uris": "https://${PUBLIC_HOST}/*",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
         "backchannel.logout.session.required": "true"
@@ -397,6 +421,7 @@
         "email",
         "web-origins",
         "acr",
+        "amr",
         "decision-api-audience"
       ],
       "optionalClientScopes": []
@@ -450,7 +475,8 @@
           "priority": 10,
           "userSetupAllowed": false,
           "authenticatorFlow": false,
-          "authenticator": "auth-username-password-form"
+          "authenticator": "auth-username-password-form",
+          "authenticatorConfig": "amr-pwd"
         },
         {
           "requirement": "CONDITIONAL",
@@ -488,7 +514,8 @@
           "priority": 20,
           "userSetupAllowed": false,
           "authenticatorFlow": false,
-          "authenticator": "auth-otp-form"
+          "authenticator": "auth-otp-form",
+          "authenticatorConfig": "amr-otp-otp-obligatoire"
         }
       ]
     },
@@ -519,7 +546,109 @@
           "priority": 30,
           "userSetupAllowed": false,
           "authenticatorFlow": false,
-          "authenticator": "auth-otp-form"
+          "authenticator": "auth-otp-form",
+          "authenticatorConfig": "amr-otp-otp-volontaire"
+        }
+      ]
+    },
+    {
+      "alias": "decision-reset-credentials",
+      "description": "Mot de passe oublié : courriel, nouveau mot de passe, puis le même contrôle OTP que la connexion (sans session sans OTP pour analyste et admin)",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "reset-credentials-choose-user"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "reset-credential-email"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "reset-password"
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 40,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "decision-reset-otp-obligatoire"
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 50,
+          "userSetupAllowed": false,
+          "authenticatorFlow": true,
+          "flowAlias": "decision-reset-otp-volontaire"
+        }
+      ]
+    },
+    {
+      "alias": "decision-reset-otp-obligatoire",
+      "description": "Rôle mfa-requise : OTP exigé après la réinitialisation, enrôlement forcé s'il manque",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "conditional-user-role",
+          "authenticatorConfig": "reset-role-mfa-requise"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "auth-otp-form",
+          "authenticatorConfig": "amr-otp-reset-otp-obligatoire"
+        }
+      ]
+    },
+    {
+      "alias": "decision-reset-otp-volontaire",
+      "description": "Autres utilisateurs : OTP exigé s'il est configuré (jamais supprimé par la réinitialisation)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "conditional-user-role",
+          "authenticatorConfig": "reset-role-mfa-non-requise"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "conditional-user-configured"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorFlow": false,
+          "authenticator": "auth-otp-form",
+          "authenticatorConfig": "amr-otp-reset-otp-volontaire"
         }
       ]
     }
@@ -537,6 +666,55 @@
       "config": {
         "condUserRole": "mfa-requise",
         "negate": "true"
+      }
+    },
+    {
+      "alias": "reset-role-mfa-requise",
+      "config": {
+        "condUserRole": "mfa-requise",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "reset-role-mfa-non-requise",
+      "config": {
+        "condUserRole": "mfa-requise",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "amr-pwd",
+      "config": {
+        "default.reference.value": "pwd",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "amr-otp-otp-obligatoire",
+      "config": {
+        "default.reference.value": "otp",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "amr-otp-otp-volontaire",
+      "config": {
+        "default.reference.value": "otp",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "amr-otp-reset-otp-obligatoire",
+      "config": {
+        "default.reference.value": "otp",
+        "default.reference.maxAge": "36000"
+      }
+    },
+    {
+      "alias": "amr-otp-reset-otp-volontaire",
+      "config": {
+        "default.reference.value": "otp",
+        "default.reference.maxAge": "36000"
       }
     }
   ],

@@ -2,6 +2,7 @@
 
     python -m decision_api.cli create-user --email a@b.sn --role admin   # Keycloak (toute pile)
     python -m decision_api.cli dev-token --role admin                    # local, sans Keycloak
+    python -m decision_api.cli purge-logs --days 90                      # rétention (app_owner)
 
 `create-user` passe par l'API d'administration Keycloak (le realm reste la source unique des
 utilisateurs, S13) : l'utilisateur reçoit un mot de passe temporaire affiché une seule fois et doit le
@@ -9,6 +10,9 @@ changer à la première connexion ; analyste et admin enrôlent leur OTP (rôle 
 
 `dev-token` signe un JWT avec une clé locale (var/dev-auth/) et écrit le JWKS correspondant ; l'API le lit
 si KEYCLOAK_JWKS_URL=file://…/var/dev-auth/jwks.json. Refusé en production.
+
+`purge-logs` supprime les lignes de `app.query_log` plus anciennes que la rétention (90 jours) avec le
+rôle propriétaire `app_owner` (OWNER_DATABASE_URL) : `app_rw`, le rôle de l'API, n'a pas DELETE.
 """
 
 from __future__ import annotations
@@ -250,6 +254,8 @@ def cmd_dev_token(args: argparse.Namespace) -> int:
         "nbf": now - 5,
         "exp": now + args.ttl,
         "resource_access": {settings.keycloak_client_id: {"roles": [args.role]}},
+        # Comme un jeton Keycloak après connexion avec OTP (mapper AMR) : REQUIRE_MFA_CLAIM=true testable.
+        "amr": ["pwd", "otp"],
     }
     token = jwt.encode(claims, key, algorithm="RS256", headers={"kid": "dev-1"})
     if args.quiet:
@@ -260,6 +266,51 @@ def cmd_dev_token(args: argparse.Namespace) -> int:
             f"# Jeton {args.role} valable {args.ttl // 60} min ; l'API doit lire KEYCLOAK_JWKS_URL=file://{jwks}"
         )
         print(token)
+    return 0
+
+
+# --- Rétention du journal ----------------------------------------------------------------------------
+
+RETENTION_DAYS = 90
+
+
+async def purge_query_log(owner_dsn: str, days: int) -> int:
+    """Supprime les lignes de app.query_log plus anciennes que `days` jours ; renvoie leur nombre."""
+    import asyncpg
+
+    dsn = owner_dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+    conn = await asyncpg.connect(dsn, server_settings={"application_name": "decision-purge"})
+    try:
+        status = await conn.execute(
+            "DELETE FROM app.query_log WHERE ts < now() - make_interval(days => $1)", days
+        )
+    finally:
+        await conn.close()
+    return int(status.split()[-1])
+
+
+def cmd_purge_logs(args: argparse.Namespace) -> int:
+    import asyncio
+
+    import asyncpg
+
+    if args.days < 1:
+        raise CliError("--days doit être ≥ 1.")
+    dsn = os.environ.get("OWNER_DATABASE_URL")
+    if not dsn:
+        from decision_core.settings import get_settings
+
+        secret = get_settings().owner_database_url
+        dsn = secret.get_secret_value() if secret else None
+    if not dsn:
+        raise CliError("OWNER_DATABASE_URL (rôle app_owner) non défini.")
+    try:
+        n = asyncio.run(purge_query_log(dsn, args.days))
+    except asyncpg.InsufficientPrivilegeError as e:
+        raise CliError("droit DELETE refusé : la purge s'exécute avec app_owner (OWNER_DATABASE_URL).") from e
+    except (OSError, asyncpg.PostgresError) as e:
+        raise CliError(f"purge impossible ({type(e).__name__}).") from e
+    print(f"query_log : {n} ligne(s) de plus de {args.days} jours supprimée(s).")
     return 0
 
 
@@ -285,6 +336,10 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--ttl", type=int, default=3600, help="Durée de validité en secondes")
     t.add_argument("--quiet", action="store_true", help="N'imprime que le jeton")
     t.set_defaults(func=cmd_dev_token)
+
+    g = sub.add_parser("purge-logs", help="Purge de app.query_log au-delà de la rétention (rôle app_owner)")
+    g.add_argument("--days", type=int, default=RETENTION_DAYS, help="Rétention en jours (défaut 90)")
+    g.set_defaults(func=cmd_purge_logs)
 
     args = p.parse_args(argv)
     try:

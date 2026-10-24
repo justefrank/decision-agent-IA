@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -11,17 +12,18 @@ from typing import Any
 
 from decision_core.semantic import SemanticLayer, load_semantic
 from fastapi import APIRouter, FastAPI
+from fastapi.openapi.utils import get_openapi
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from decision_api.auth import JWKSCache, TokenValidator
-from decision_api.config import ApiSettings, get_api_settings
+from decision_api.config import ApiSettings, get_api_settings, scrub_agent_ro_env
 from decision_api.db import make_engine, make_sessionmaker
 from decision_api.errors import install_error_handlers
 from decision_api.logging_setup import configure_logging
 from decision_api.routes import admin, conversations, core, dashboard, feedback
 from decision_api.runtime import Runtime, default_runtime
-from decision_api.services import StreamLimiter
+from decision_api.services import StreamLimiter, TTLCache
 
 log = logging.getLogger("decision_api")
 
@@ -86,6 +88,106 @@ class SecurityHeadersMiddleware:
             )
 
 
+class BodyLimitMiddleware:
+    """Borne la taille des corps de requête /api/* AVANT que l'application ne les lise (413 uniforme).
+
+    `Content-Length` trop grand : refus immédiat, sans rien lire. Sinon (ou en transfert par
+    morceaux) le corps est lu en mémoire jusqu'à la limite au plus, puis rejoué à l'application ;
+    au-delà, refus sans lire la suite. L'authentification se faisant après la lecture du corps
+    (FastAPI lit le corps avant de résoudre les dépendances), un client anonyme ne peut ainsi pas
+    faire lire plus de `max_bytes` octets.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int, prefix: str = "/api") -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.prefix = prefix
+
+    async def _reject(self, scope: Scope, send: Send) -> None:
+        request_id = scope.get("state", {}).get("request_id")
+        err: dict[str, Any] = {"code": "payload_too_large", "message": "Requête trop volumineuse."}
+        if request_id:
+            err["request_id"] = request_id
+        body = json.dumps({"error": err}, ensure_ascii=False).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"connection", b"close"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope.get("path", "").startswith(self.prefix):
+            await self.app(scope, receive, send)
+            return
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = self.max_bytes + 1
+                if declared > self.max_bytes:
+                    await self._reject(scope, send)
+                    return
+        if scope.get("method") in ("GET", "HEAD", "OPTIONS", "DELETE"):
+            has_body = any(n in (b"content-length", b"transfer-encoding") for n, _ in scope["headers"])
+            if not has_body:
+                await self.app(scope, receive, send)
+                return
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > self.max_bytes:
+                await self._reject(scope, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+            return await receive()  # ensuite : détection de la déconnexion (flux SSE)
+
+        await self.app(scope, replay, send)
+
+
+def _install_openapi_security(app: FastAPI) -> None:
+    """Déclare le schéma Bearer (JWT Keycloak) dans OpenAPI ; /api/health reste public."""
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+        }
+        for path, ops in schema.get("paths", {}).items():
+            if path == "/api/health":
+                continue
+            for op in ops.values():
+                if isinstance(op, dict):
+                    op["security"] = [{"bearerAuth": []}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
+
+
 def create_app(
     settings: ApiSettings | None = None,
     *,
@@ -95,6 +197,8 @@ def create_app(
     configure_logs: bool = True,
 ) -> FastAPI:
     settings = settings or get_api_settings()
+    settings.check_production()  # clé de pseudonymisation par défaut refusée en production
+    scrub_agent_ro_env()  # le DSN agent_ro ne reste que dans settings (transmis au seul MCP)
     if configure_logs:
         configure_logging()
     factory: RuntimeFactory = runtime_factory or default_runtime
@@ -129,6 +233,7 @@ def create_app(
     app.state.sessionmaker = None
     app.state.runtime = None
     app.state.stream_limiter = StreamLimiter()
+    app.state.tiles_cache = TTLCache(settings.dashboard_cache_ttl_s)
     app.state.token_validator = token_validator or TokenValidator(settings, JWKSCache(settings.jwks_url))
 
     install_error_handlers(app)
@@ -149,7 +254,10 @@ def create_app(
             expose_headers=["X-Request-Id", "X-Trace-Id"],
             max_age=600,
         )
-    app.add_middleware(SecurityHeadersMiddleware, hsts=settings.is_production)
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
+    app.add_middleware(SecurityHeadersMiddleware, hsts=settings.is_production)  # le plus externe
+    if docs:
+        _install_openapi_security(app)
     return app
 
 
