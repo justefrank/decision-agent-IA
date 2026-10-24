@@ -33,13 +33,15 @@ RETENTION_DAYS ?= 90
 # dbt isolé de l'espace de travail (versions figées dans warehouse/requirements.txt).
 DBT_PROFILES_DIR := $(CURDIR)/warehouse
 DBT_CORE := $(shell grep -E '^dbt-core==' warehouse/requirements.txt)
-DBT := uvx --python 3.12 --with-requirements warehouse/requirements.txt --from '$(DBT_CORE)' dbt
+DBT ?= uvx --python 3.12 --with-requirements warehouse/requirements.txt --from '$(DBT_CORE)' dbt
 DBT_FLAGS := --project-dir warehouse
 RIGHTS_REPORT ?= var/reports/rights-test.json
 COMPOSE := docker compose -f infra/compose.yaml
 
 .PHONY: help sync db-up db-down seed generate dbt-build dbt-run rights-test migrate api eval test \
         lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user \
+        up dev-up down logs ps restart dc-build dc-init dc-seed dc-rights-test dc-migrate dc-admin dc-user \
+        dc-token dc-eval dc-shell dc-reset \
         purge-logs
 
 help: ## Liste des cibles
@@ -81,8 +83,9 @@ purge-logs: ## Purge app.query_log au-delà de RETENTION_DAYS (90 j) avec app_ow
 api: ## API en développement (uvicorn, rechargement)
 	uv run uvicorn decision_api.main:app --reload --host 127.0.0.1 --port 8000
 
-eval: ## Évaluation sur le jeu de test (agent appelé directement)
-	uv run python -m decision_eval run --split test
+SPLIT ?= test
+eval: ## Évaluation (agent appelé directement) ; SPLIT=test|dev|intent|followup, PASSES=3
+	EVAL_META_DSN='$(DBT_OWNER_DSN)' uv run python -m decision_eval run --split $(SPLIT) --passes $(or $(PASSES),3)
 
 test: ## Tests pytest de tous les paquets
 	uv run pytest -q
@@ -91,21 +94,21 @@ lint: ## Ruff sur les paquets et scripts
 	uv run ruff check packages warehouse/scripts
 
 secrets: ## Crée les secrets Docker manquants (infra/secrets/*.txt, aléatoires)
-	@mkdir -p infra/secrets
+	@# Dossier 700 (protège les secrets sur l'hôte) ; fichiers 644 : Compose (hors Swarm) les monte
+	@# tels quels et Postgres, Keycloak et l'API les lisent sous d'autres UID que le vôtre.
+	@mkdir -p infra/secrets && chmod 700 infra/secrets
 	@for s in postgres_password dbt_owner_password app_owner_password app_rw_password \
 	          agent_ro_password keycloak_db_password keycloak_admin_password log_pseudonym_key; do \
 	  f=infra/secrets/$$s.txt; \
-	  if [ ! -f $$f ]; then (umask 077; openssl rand -hex 24 > $$f); echo "créé $$f"; fi; \
+	  if [ ! -f $$f ]; then openssl rand -hex 24 > $$f; echo "créé $$f"; fi; \
 	done
-	@f=infra/secrets/anthropic_api_key.txt; if [ ! -f $$f ]; then (umask 077; : > $$f); \
+	@f=infra/secrets/anthropic_api_key.txt; if [ ! -f $$f ]; then : > $$f; \
 	  echo "créé $$f (vide : y mettre la clé API Claude)"; fi
+	@chmod 644 infra/secrets/*.txt
 
-compose-up: secrets ## Lance la pile compose (profil dev : Mailpit) ; migrations avant l'API
-	@mkdir -p var/reports
-	$(COMPOSE) --profile dev up -d --build
+compose-up: up ## Alias de make up
 
-compose-down: ## Arrête la pile compose
-	$(COMPOSE) --profile dev down
+compose-down: down ## Alias de make down
 
 # --- Démarrage rapide en local (sans Docker) ------------------------------------------------------
 INIT_SCALE ?= 0.05
@@ -146,3 +149,76 @@ create-admin: ## Crée un administrateur dans Keycloak : make create-admin EMAIL
 create-user: ## Crée un utilisateur Keycloak : make create-user EMAIL=... ROLE=decideur|analyste|admin
 	@test -n "$(EMAIL)" || (echo "EMAIL requis" && exit 2)
 	uv run python -m decision_api.cli create-user --email '$(EMAIL)' --role $(ROLE)
+
+# --- Mode conteneurs (Docker sur votre machine) ---------------------------------------------------
+# Les cibles dc-* lancent les cibles ci-dessus dans le conteneur « tools » (réseau Docker, secrets) :
+# même Makefile, mêmes commandes, mais Postgres et Keycloak joints par leur nom de service.
+DC_FILES := -f infra/compose.yaml
+DEV ?=
+ifeq ($(DEV),1)
+DC_FILES += -f infra/compose.dev.yaml
+endif
+DC := HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose $(DC_FILES) --profile dev
+DC_TOOLS := $(DC) --profile tools run --rm tools
+
+up: secrets ## Conteneurs : lance la pile (Postgres, Keycloak, migrations, API, Caddy, Mailpit)
+	@mkdir -p var/reports var/dev-auth
+	$(DC) up -d --build
+
+dev-up: ## Conteneurs, développement : API sur 127.0.0.1:8000 avec jetons locaux et Swagger
+	@$(MAKE) --no-print-directory up DEV=1
+	@$(MAKE) --no-print-directory dc-token DEV=1 ROLE=admin >/dev/null
+	@echo "API : http://127.0.0.1:8000/api/docs ; jeton : make dc-token ROLE=admin"
+
+down: ## Conteneurs : arrête la pile (les données restent dans le volume pgdata)
+	$(DC) --profile tools down
+
+logs: ## Conteneurs : suit les journaux (make logs S=api pour un seul service)
+	$(DC) logs -f --tail=100 $(S)
+
+restart: ## Conteneurs : redémarre un service (make restart S=api, après un changement de secret)
+	$(DC) restart $(S)
+
+ps: ## Conteneurs : état des services
+	$(DC) ps
+
+dc-build: ## Conteneurs : reconstruit les images (API et outils), après un changement de uv.lock
+	$(DC) --profile tools build
+
+dc-init: up ## Conteneurs : pile + données factices (INIT_SCALE) + test de droits, en une commande
+	$(DC_TOOLS) make seed SCALE=$(INIT_SCALE)
+	$(DC_TOOLS) make rights-test
+	@echo ""
+	@echo "Prêt. Données factices à l'échelle $(INIT_SCALE) dans le Postgres des conteneurs."
+	@echo "  make dc-admin EMAIL=prenom.nom@exemple.sn   administrateur Keycloak"
+	@echo "  make dev-up && make dc-token ROLE=admin      API de développement avec jeton local"
+
+dc-seed: ## Conteneurs : (re)génère les données factices (SCALE, défaut 1.0) et lance dbt
+	$(DC_TOOLS) make seed SCALE=$(SCALE)
+
+dc-rights-test: ## Conteneurs : test de droits de agent_ro (rapport lu par /api/admin/security)
+	$(DC_TOOLS) make rights-test
+
+dc-migrate: ## Conteneurs : migrations Alembic (déjà lancées à chaque make up)
+	$(DC) run --rm migrate
+
+dc-admin: ## Conteneurs : crée un administrateur Keycloak : make dc-admin EMAIL=...
+	@test -n "$(EMAIL)" || (echo "EMAIL requis : make dc-admin EMAIL=..." && exit 2)
+	$(DC_TOOLS) python -m decision_api.cli create-user --email '$(EMAIL)' --role admin
+
+dc-user: ## Conteneurs : crée un utilisateur Keycloak : make dc-user EMAIL=... ROLE=decideur
+	@test -n "$(EMAIL)" || (echo "EMAIL requis" && exit 2)
+	$(DC_TOOLS) python -m decision_api.cli create-user --email '$(EMAIL)' --role $(ROLE)
+
+dc-token: ## Conteneurs : jeton local pour ROLE (accepté seulement par make dev-up)
+	@$(DC_TOOLS) python -m decision_api.cli dev-token --role $(ROLE) --quiet
+
+dc-eval: ## Conteneurs : évaluation (clé dans infra/secrets/anthropic_api_key.txt) ; SPLIT, PASSES
+	$(DC_TOOLS) make eval SPLIT=$(SPLIT) PASSES=$(or $(PASSES),3)
+
+dc-shell: ## Conteneurs : shell dans le conteneur outils (make, uv, dbt, psql)
+	$(DC_TOOLS) bash
+
+dc-reset: ## Conteneurs : supprime TOUTES les données (volumes) puis relance dc-init
+	$(DC) --profile tools down -v
+	@$(MAKE) --no-print-directory dc-init

@@ -1,0 +1,15 @@
+# Surcharge de développement (make dev-up) : à combiner avec compose.yaml.
+#   docker compose -f infra/compose.yaml -f infra/compose.dev.yaml up -d
+# - l'API accepte les jetons signés localement (make dc-token ROLE=admin), sans passer par Keycloak ;
+# - Swagger servi sur http://127.0.0.1:8000/api/docs, API publiée sur la boucle locale ;
+# - MFA non exigée dans le jeton. Ne jamais utiliser ce fichier hors d'un poste de développement.
+services:
+  api:
+    environment:
+      ENVIRONMENT: dev
+      REQUIRE_MFA_CLAIM: "false"
+      KEYCLOAK_JWKS_URL: file:///app/var/dev-auth/jwks.json
+    volumes:
+      - ../var/dev-auth:/app/var/dev-auth:ro
+    ports:
+      - "127.0.0.1:8000:8000"

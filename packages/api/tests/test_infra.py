@@ -142,3 +142,29 @@ def test_postgres_maintenance_db_closed_to_public():
 def test_dockerignore_excludes_secrets_and_tests():
     lines = set((ROOT / ".dockerignore").read_text(encoding="utf-8").split())
     assert {"infra/secrets", "var/", ".git", ".venv", "**/__pycache__", "**/tests"} <= lines
+
+
+def test_tools_service_runs_makefile_inside_docker_network():
+    svc = _compose()["services"]["tools"]
+    assert svc["profiles"] == ["tools"]
+    assert svc["environment"]["PG_HOST"] == "postgres"
+    assert "..:/workspace" in svc["volumes"]
+    assert {"dbt_owner_password", "agent_ro_password", "app_owner_password"} <= set(svc["secrets"])
+    entry = (INFRA / "tools-entrypoint.sh").read_text(encoding="utf-8")
+    # make -e : l'environnement du conteneur l'emporte sur un .env de l'hôte monté avec le dépôt
+    assert 'exec make -e "$@"' in entry
+
+
+def test_dev_override_only_relaxes_api_for_local_tokens():
+    dev = yaml.safe_load((INFRA / "compose.dev.yaml").read_text(encoding="utf-8"))
+    assert set(dev["services"]) == {"api"}
+    api = dev["services"]["api"]
+    assert api["environment"]["ENVIRONMENT"] == "dev"
+    assert api["environment"]["KEYCLOAK_JWKS_URL"].startswith("file://")
+    assert all(p.startswith("127.0.0.1:") for p in api["ports"])
+
+
+def test_secrets_readable_by_container_uids():
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "chmod 700 infra/secrets" in makefile
+    assert "chmod 644 infra/secrets/*.txt" in makefile

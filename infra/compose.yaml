@@ -1,10 +1,11 @@
 # Déploiement mono-hôte (SYSTEM_DESIGN v5 §5.3) : proxy Caddy de même origine devant la SPA,
 # l'API et Keycloak ; Postgres 17 (bases warehouse et keycloak) ; Mailpit en profil dev.
 #
-#   make secrets            # crée infra/secrets/*.txt (aléatoires, ignorés par git)
-#   make compose-up         # = docker compose -f infra/compose.yaml --profile dev up -d --build
-#   make seed PG_PORT=5432 DBT_PG_PASSWORD="$(cat infra/secrets/dbt_owner_password.txt)"
+#   make up                 # secrets + pile complète (production locale)
+#   make dc-init            # pile + données factices + test de droits, tout dans les conteneurs
+#   make dev-up             # variante développement (infra/compose.dev.yaml) : jetons locaux, Swagger
 #
+# Le service « tools » (profil tools) exécute les cibles du Makefile dans le réseau Docker.
 # Les migrations Alembic (service « migrate ») s'exécutent à chaque démarrage, avant l'API.
 # Versions figées ; les monter explicitement (revue de compatibilité, ENF11).
 name: decision
@@ -192,6 +193,37 @@ services:
       - ./web-fallback:/srv/fallback:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  # Outils de développement (make dc-*) : code monté depuis l'hôte, dépendances dans l'image.
+  tools:
+    build:
+      context: ..
+      dockerfile: infra/tools.Dockerfile
+    image: decision-tools:local
+    profiles: [tools]
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      REFERENCE_DATE: ${REFERENCE_DATE:-2026-09-30}
+      ENVIRONMENT: dev
+      # create-admin / create-user : API d'administration sur le réseau interne.
+      KEYCLOAK_URL: http://keycloak:8080/auth
+      KEYCLOAK_ADMIN_USER: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin-temporaire}
+      KEYCLOAK_ISSUER: https://${PUBLIC_HOST:-localhost}/auth/realms/decision
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+      LLM_EFFORT: ${LLM_EFFORT:-medium}
+    secrets:
+      - dbt_owner_password
+      - app_owner_password
+      - app_rw_password
+      - agent_ro_password
+      - keycloak_admin_password
+      - anthropic_api_key
+    volumes:
+      - ..:/workspace
 
   mailpit:
     image: axllent/mailpit:v1.27.0

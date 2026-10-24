@@ -311,6 +311,10 @@ Un seul `docker compose` (`infra/compose.yaml`).
 | `keycloak` | quay.io/keycloak/keycloak:26.x (version figée) | `start --optimized`, base `keycloak`, `hostname`, `proxy-headers=xforwarded` ; thème monté en `.jar` ; événements activés |
 | `postgres` | postgres:17 | Volume ; `infra/postgres/init/` monté dans `/docker-entrypoint-initdb.d` |
 | `mailpit` | axllent/mailpit | Développement seulement (RF16) |
+| `migrate` | image de l'API | Alembic (`app_owner`) à chaque démarrage, avant l'API |
+| `tools` | `infra/tools.Dockerfile` (profil `tools`) | Développement : dépôt monté, uv + dbt + make ; exécute les cibles du Makefile (`make dc-*`) dans le réseau Docker avec les secrets |
+
+Deux modes de travail, mêmes cibles : en local (`make init`, Postgres jetable sans Docker) ou en conteneurs (`make dc-init`, `make dev-up` qui ajoute `infra/compose.dev.yaml` : jetons locaux, Swagger, API sur la boucle locale). Détail dans le [README](../README.md).
 
 | Tâche | Contenu |
 |---|---|
