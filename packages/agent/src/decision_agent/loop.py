@@ -41,7 +41,15 @@ from decision_agent.formatting import (
     template_answer,
 )
 from decision_agent.llm import LLMClient, LLMError, LLMRequest, LLMStep, cost_usd
-from decision_agent.prompts import ANSWER_NOW, USE_TERMINAL, build_system, build_turn_message, prompt_version
+from decision_agent.prompts import (
+    ABLATIONS,
+    ANSWER_NOW,
+    USE_TERMINAL,
+    build_system,
+    build_turn_message,
+    claude_tools,
+    prompt_version,
+)
 from decision_agent.state import (
     apply_patch,
     make_pending,
@@ -52,8 +60,8 @@ from decision_agent.state import (
     state_from_query_metric,
     state_from_run_query,
 )
-from decision_agent.tools import CAVEATS, CLAUDE_TOOLS, DATA_TOOLS, TERMINAL_TOOLS, ToolClient
-from decision_agent.validator import extract_numeric_literals_fr, validate_answer
+from decision_agent.tools import CAVEATS, DATA_TOOLS, TERMINAL_TOOLS, ToolClient
+from decision_agent.validator import extract_numeric_literals_fr, literals_to_refs, validate_answer
 
 EventCb = Callable[[StepEvent], Awaitable[None]] | None
 LogCb = Callable[[QueryLogRecord], Awaitable[None]] | None
@@ -211,15 +219,26 @@ def compile_metric_args(
 
 class Agent:
     def __init__(
-        self, llm: LLMClient, tools: ToolClient, semantic: Any, settings: Any, *, limits: Limits | None = None
+        self,
+        llm: LLMClient,
+        tools: ToolClient,
+        semantic: Any,
+        settings: Any,
+        *,
+        limits: Limits | None = None,
+        ablation: str = "none",
     ) -> None:
+        if ablation not in ABLATIONS:
+            raise ValueError(f"ablation inconnue : {ablation}")
         self.llm = llm
         self.tools = tools
         self.semantic = semantic
         self.settings = settings
         self.limits = limits or Limits.from_semantic(semantic)
-        self.system = build_system(semantic)
-        self.prompt_version = prompt_version()
+        self.ablation = ablation
+        self.system = build_system(semantic, ablation)
+        self.claude_tools = claude_tools(ablation)
+        self.prompt_version = prompt_version(ablation)
 
     async def answer(
         self,
@@ -398,7 +417,7 @@ class _Run:
         req = LLMRequest(
             model=settings.llm_model,
             system=self.a.system,
-            tools=CLAUDE_TOOLS,
+            tools=self.a.claude_tools,
             messages=list(msgs),
             effort=settings.llm_effort,
             max_tokens=self.lim.max_tokens,
@@ -681,7 +700,16 @@ class _Run:
             caveats=model_caveats,
             allowed_years=years,
             allowed_small_ints=smalls,
+            accept_matched_literals=self.a.ablation == "e",
         )
+        if self.a.ablation == "d":  # sans validateur : seules les erreurs qui empêchent le rendu restent
+            errs = [
+                e
+                for e in errs
+                if e.startswith(("référence inconnue", "étiquette inconnue", "résultat inconnu"))
+            ]
+        if self.a.ablation == "e" and not errs:
+            text = literals_to_refs(text, self.registry)
         # Politique par champ : sens de « région » non précisé pour un KPI sans défaut
         if (
             state.metrics

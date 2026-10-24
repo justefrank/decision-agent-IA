@@ -63,6 +63,7 @@ dimensions:
     joins: ["JOIN analytics.dim_region ra ON ra.region_id = f.region_agent_id"]
     column: ra.region
     filter_column: ra.region
+    where: "f.agent_id <> -1"  # transferts et paiements (hors agent) exclus d'un découpage par région agent
   region_client:
     label: Région du client
     joins: ["JOIN analytics.dim_region rc ON rc.region_id = f.region_client_id"]

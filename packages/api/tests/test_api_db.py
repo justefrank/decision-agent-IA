@@ -231,6 +231,7 @@ async def test_dashboard_and_analysis_reuse(ctx):
     r = await ctx.client.get("/api/dashboard", params={"period": "2026-08", "region": "Dakar"}, headers=h)
     assert r.status_code == 200
     assert r.json()["period"]["label"] == "août 2026" and r.json()["region"] == "Dakar"
+    assert isinstance(r.json()["tiles"], list)  # réponse à plat, sans double enveloppe
     assert (
         await ctx.client.get("/api/dashboard", params={"period": "2026-13"}, headers=h)
     ).status_code == 422

@@ -22,11 +22,13 @@ from typing import Any, Protocol
 StopReason = str
 EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
-# Table de prix versionnée ($ par million de jetons). Source : grille Anthropic au 2026-10-06.
+# Table de prix versionnée ($ par million de jetons).
+# Source : platform.claude.com/docs/en/about-claude/pricing
+# (vérifiée le 2026-10-24) ; lecture de cache = 0,05 × entrée pour Opus et Sonnet 5.5.
 # Écriture de cache : 1,25 × entrée (5 min), 2 × entrée (1 h).
-PRICING_VERSION = "2026-10-06"
+PRICING_VERSION = "2026-10-24"
 PRICING: dict[str, dict[str, float]] = {
-    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.10},
     "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cache_read": 0.20},
     "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01},
 }

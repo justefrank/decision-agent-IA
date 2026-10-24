@@ -208,10 +208,14 @@ class FakeAgent:
 
 
 def tiles_for(period: Period, region: str | None) -> dict[str, Any]:
+    # même forme que decision_agent.dashboard.fetch_dashboard
     return {
-        "kpis": [{"metric": "volume_transactions", "current": 1000, "previous": 900}],
         "period": period.model_dump(mode="json"),
+        "compare_period": None,
         "region": region,
+        "tiles": [{"metric": "volume_transactions", "value": 1000, "previous": 900, "available": True}],
+        "facts": [],
+        "errors": [],
     }
 
 

@@ -49,12 +49,13 @@ async def get_dashboard(
 ) -> dict[str, Any]:
     p = month_period(period, settings.reference_date)
     reg = check_region(region, _regions(runtime))
-    tiles = await _tiles(runtime, p, reg)
+    dashboard = await _tiles(runtime, p, reg)
+    # fetch_dashboard renvoie déjà period, compare_period, region, tiles, facts, errors
     return {
         "period": p.model_dump(mode="json"),
         "region": reg,
+        **dashboard,
         "semantic_version": runtime.semantic.version,
-        "tiles": tiles,
     }
 
 

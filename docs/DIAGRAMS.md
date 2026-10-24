@@ -191,7 +191,7 @@ erDiagram
     text trace_id
     int step
     int attempt
-    text user_id "HMAC du sub"
+    text user_ref "HMAC du sub"
     text tool "query_metric run_query describe_schema llm"
     text status "ok error blocked"
     text error_class
@@ -218,8 +218,7 @@ erDiagram
     bigint id PK
     text split "test dev intent ..."
     text ablation "none a b c d e"
-    text model_served
-    text effort
+    text model_id
     text semantic_version
     text git_sha
     int n
@@ -227,17 +226,19 @@ erDiagram
     numeric pass3
     numeric ci_low
     numeric ci_high
+    jsonb report "traçabilité complète"
   }
   eval_result {
     bigint run_id FK
     text question_id
     text category
     int passes "0 a 3"
-    text terminal_tool
+    jsonb got
   }
   audit_access_log {
     bigint id PK
-    text actor_id
+    text actor_sub
+    text actor_role
     text action
     text target_trace_id
   }

@@ -55,12 +55,12 @@ async def test_par_region_agent(service: ToolService, fixture_data: Fixture) -> 
     assert r.ok, r.error
     expected: dict[str, int] = defaultdict(int)
     for t in in_period(fixture_data.txns, M_START, M_END):
-        if t.statut == "reussie":
+        if t.statut == "reussie" and t.agent_id != -1:
             expected[fixture_data.regions[t.region_agent_id]] += t.frais_xof
     got = {row[0]: row[1] for row in r.rows}
     assert {k: v for k, v in got.items() if v} == {k: v for k, v in expected.items() if v}
-    assert "Non applicable" in got
-    assert r.warnings  # rappel de la ligne « Non applicable »
+    assert "Non applicable" not in got  # hors agent exclu d'un découpage par région du point de service
+    assert r.warnings  # rappel de l'exclusion
 
 
 async def test_comparaison_periode_precedente(service: ToolService, fixture_data: Fixture) -> None:

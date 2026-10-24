@@ -259,8 +259,13 @@ def validate_text(
     allowed_small_ints: Iterable[int] = (),
     allow_hypothesis: bool = True,
     restrict_to: set[str] | None = None,
+    accept_matched_literals: bool = False,
 ) -> list[str]:
-    """Contrôles communs au chat et à l'analyse : références, littéraux, causalité."""
+    """Contrôles communs au chat et à l'analyse : références, littéraux, causalité.
+
+    `accept_matched_literals` (ablation e) : un nombre écrit en clair qui correspond à un fait est accepté ;
+    il est ensuite remplacé par sa référence (`literals_to_refs`).
+    """
     errs: list[str] = []
     years = set(allowed_years)
     smalls = set(allowed_small_ints)
@@ -309,7 +314,7 @@ def validate_text(
         ids = match_fact(lit, registry, variation_context=bool(VARIATION_WORDS.search(context)))
         if not ids:
             errs.append(f"nombre non sourcé : « {lit.raw} »")
-        else:
+        elif not accept_matched_literals:
             errs.append(f"écris {{{{{ids[0]}}}}} au lieu de « {lit.raw} »")
     # 4. Causalité
     errs.extend(causal_violations(text, allow_hypothesis=allow_hypothesis))
@@ -324,9 +329,16 @@ def validate_answer(
     caveats: list[str],
     allowed_years: Iterable[int] = (),
     allowed_small_ints: Iterable[int] = (),
+    accept_matched_literals: bool = False,
 ) -> list[str]:
     """Validation de `submit_answer` ; renvoie la liste des erreurs (vide si valide)."""
-    errs = validate_text(text, registry, allowed_years=allowed_years, allowed_small_ints=allowed_small_ints)
+    errs = validate_text(
+        text,
+        registry,
+        allowed_years=allowed_years,
+        allowed_small_ints=allowed_small_ints,
+        accept_matched_literals=accept_matched_literals,
+    )
     for rid in result_ids:
         if registry.entry(rid) is None:
             errs.append(f"résultat inconnu {rid}")
@@ -351,3 +363,25 @@ def validate_answer(
             "et dis qu'aucune donnée ne correspond."
         )
     return errs
+
+
+def literals_to_refs(text: str, registry: FactRegistry) -> str:
+    """Remplace chaque nombre en clair apparié à un fait par sa référence (ablation e).
+
+    Les gabarits existants sont masqués à longueur constante pour garder les positions.
+    """
+    masked = TEMPLATE_RE.sub(lambda m: "§" * len(m.group(0)), text)
+    norm = normalize_text(masked)
+    out, last = [], 0
+    for lit in extract_numeric_literals_fr(masked):
+        if lit.kind not in ("nombre",) or lit.value is None:
+            continue
+        context = norm[max(0, lit.start - 60) : lit.start]
+        ids = match_fact(lit, registry, variation_context=bool(VARIATION_WORDS.search(context)))
+        if not ids:
+            continue
+        out.append(text[last : lit.start])
+        out.append("{{" + ids[0] + "}}")
+        last = lit.start + len(lit.raw)
+    out.append(text[last:])
+    return "".join(out)

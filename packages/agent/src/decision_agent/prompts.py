@@ -67,35 +67,74 @@ region_client).
 """
 
 
-def semantic_block(semantic: Any) -> str:
+# Ablations de l'évaluation (SRS v5 §11) : une seule liste, appliquée ici et dans la boucle.
+#   a : modèle seul + schéma brut (ni KPI, ni glossaire, ni exemples, ni query_metric)
+#   b : sans exemples          c : sans query_metric (SQL seul)
+#   d : sans validateur de sortie
+#   e : sans citation par référence (le modèle écrit les nombres, le validateur les apparie)
+ABLATIONS = ("none", "a", "b", "c", "d", "e")
+
+NO_QUERY_METRIC_RULE = (
+    "\nAblation : l'outil query_metric n'est pas disponible. Calcule tous les chiffres avec run_query, "
+    "en suivant les définitions de KPI fournies."
+)
+LITERAL_NUMBERS_RULE = (
+    "\nAblation : n'utilise pas de références {{f…}}/{{d…}}. Écris les nombres en clair, exactement tels "
+    "qu'ils figurent dans les faits fournis (valeurs et dérivés), avec leur unité."
+)
+
+
+def semantic_block(semantic: Any, ablation: str = "none") -> str:
     """Couche sémantique canonique (tables, KPI, glossaire, exemples) + politique par champ."""
+    if ablation == "a":
+        import yaml
+
+        body = yaml.safe_dump({"tables": semantic.tables}, allow_unicode=True, sort_keys=True, width=120)
+        return '<schema version="' + semantic.version + '">\n' + body + "</schema>"
     policy = json.dumps(field_policy(semantic.glossary), ensure_ascii=False, sort_keys=True)
     return (
         '<couche_semantique version="'
         + semantic.version
         + '">\n'
-        + semantic.canonical_text()
+        + semantic.canonical_text(include_examples=ablation != "b")
         + "</couche_semantique>\n<politique_par_champ>"
         + policy
         + "</politique_par_champ>"
     )
 
 
-def build_system(semantic: Any) -> list[dict[str, Any]]:
+def system_rules(ablation: str = "none") -> str:
+    rules = SYSTEM_RULES
+    if ablation in ("a", "c"):
+        rules += NO_QUERY_METRIC_RULE
+    if ablation == "e":
+        rules += LITERAL_NUMBERS_RULE
+    return rules
+
+
+def claude_tools(ablation: str = "none") -> list[dict[str, Any]]:
+    if ablation in ("a", "c"):
+        return [t for t in CLAUDE_TOOLS if t["name"] != "query_metric"]
+    return CLAUDE_TOOLS
+
+
+def build_system(semantic: Any, ablation: str = "none") -> list[dict[str, Any]]:
     """Deux blocs système ; le dernier porte le point de cache de 1 h."""
     return [
-        {"type": "text", "text": SYSTEM_RULES},
+        {"type": "text", "text": system_rules(ablation)},
         {
             "type": "text",
-            "text": semantic_block(semantic),
+            "text": semantic_block(semantic, ablation),
             "cache_control": {"type": "ephemeral", "ttl": "1h"},
         },
     ]
 
 
-def prompt_version() -> str:
+def prompt_version(ablation: str = "none") -> str:
     """Hash des règles et des schémas d'outils (la couche sémantique a sa propre version)."""
-    blob = SYSTEM_RULES + json.dumps(CLAUDE_TOOLS, sort_keys=True, ensure_ascii=False)
+    blob = system_rules(ablation) + json.dumps(claude_tools(ablation), sort_keys=True, ensure_ascii=False)
+    if ablation != "none":
+        blob += "|ablation=" + ablation
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 

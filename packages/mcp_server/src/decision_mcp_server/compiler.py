@@ -282,8 +282,8 @@ def compile_query_metric(p: QueryMetricParams, semantic: SemanticLayer) -> Compi
             )
         if dim == "region_agent":
             warnings.append(
-                "La ligne « Non applicable » de region_agent regroupe les transactions hors agent "
-                "(transferts et paiements)."
+                "Découpage par région du point de service : les transactions hors agent "
+                "(transferts et paiements) sont exclues."
             )
 
     compiled_filters = []

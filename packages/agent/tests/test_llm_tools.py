@@ -190,7 +190,7 @@ def test_cost_table():
         cache_read_tokens=1_000_000,
         cache_write_1h_tokens=1_000_000,
     )
-    assert cost_usd(u, "claude-sonnet-5-5") == pytest.approx(2 + 10 + 0.2 + 4)
+    assert cost_usd(u, "claude-sonnet-5-5") == pytest.approx(2 + 10 + 0.1 + 4)
     assert cost_usd(u, "modele-inconnu") is None
 
 

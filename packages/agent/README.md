@@ -44,7 +44,16 @@ Utilisation :
 ```python
 async with McpToolClient.start(settings) as tools:
     agent = Agent(AnthropicClient.from_settings(settings), tools, get_semantic(), settings)
-    msg = await agent.answer(question, history=[], state=None, role="analyste", trace_id=tid,
-                             on_event=send_step, on_log=write_log)
+    msg = await agent.answer(
+        question, history=[], state=None, role="analyste", trace_id=tid, on_event=send_step, on_log=write_log
+    )
     payload = msg.for_role(role)
 ```
+
+## Ablations (évaluation)
+
+`Agent(..., ablation="none"|"a"|"b"|"c"|"d"|"e")`, liste unique de SRS v5 §11 :
+(a) schéma brut seul, sans `query_metric` ; (b) sans exemples ; (c) sans `query_metric` ;
+(d) sans validateur (seules les références inconnues restent bloquantes) ;
+(e) sans citation par référence (nombres écrits en clair, appariés aux faits puis convertis en références).
+Chaque bras a son propre `prompt_version`. Le runner `decision_eval` passe ce paramètre.

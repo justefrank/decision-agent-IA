@@ -96,47 +96,50 @@ Les scripts `infra/postgres/init/` (`00-roles.sh`, `sql/01-roles.sql`, `sql/02-w
 
 | Table | `SELECT` | `INSERT` | `UPDATE` | `DELETE` | Remarque |
 |---|---|---|---|---|---|
-| `conversation` | oui | oui | `title` seulement | — | Filtre `user_id = sub` dans l'API |
-| `message` | oui | oui | — | — | |
+| `conversation` | oui | oui | oui | oui | Filtre `user_id = sub` dans l'API ; suppression par son propriétaire (cascade sur `message`) |
+| `message` | oui | oui | oui | oui | |
+| `feedback` | oui | oui | oui | oui | Traitement : `status`, `reject_reason`, `promoted_to_dev`, `handled_by`, `handled_at` |
+| `analysis` | oui | oui | oui | oui | Une ligne par génération |
 | `query_log` | oui | oui | — | — | **Ajout seul** ; lu pour l'audit et le quota |
-| `feedback` | oui | oui | `status`, `reject_reason`, `promoted_to_dev`, `handled_by`, `handled_at` | — | |
-| `eval_run` | oui | oui | — | — | Écrit par `make eval` |
-| `eval_result` | oui | oui | — | — | Écrit par `make eval` |
 | `audit_access_log` | oui | oui | — | — | **Ajout seul** |
-| `analysis` | oui | oui | — | — | Une ligne par génération |
+| `eval_run` | oui | oui | — | — | Écrit par `make eval` (`--write-db-env`) |
+| `eval_result` | oui | oui | — | — | Écrit par `make eval` |
 
 `TRUNCATE` n'est jamais accordé. La purge de rétention (`query_log` > 90 jours) est faite par `app_owner` (tâche planifiée), pas par l'API.
 
 ### Tables applicatives (schéma `app`, 8 tables)
 
 ```
-conversation(id uuid PK, user_id text /* claim sub, sans FK */, title text, created_at timestamptz)
+conversation(id uuid PK, user_id text /* claim sub, sans FK */, title text, created_at, updated_at timestamptz)
 message(id uuid PK, conversation_id uuid → conversation ON DELETE CASCADE, role text CHECK(user|assistant),
-        content text, structured_json jsonb /* AssistantMessage complet, sql compris */, created_at timestamptz)
-query_log(id bigint PK, trace_id text, step int, attempt int, ts timestamptz default now(),
-          user_id text /* HMAC-SHA256 du sub */, conversation_id uuid, question_hash text,
+        content text, structured_json jsonb /* AssistantMessage complet, sql compris */, trace_id text,
+        latency_ms int, created_at timestamptz)
+query_log(id bigint PK, ts timestamptz default now(), trace_id text, step int, attempt int,
+          user_ref text /* HMAC-SHA256 du sub */, conversation_id uuid, question_hash text /* HMAC */,
           tool text /* query_metric | run_query | describe_schema | llm */,
           status text CHECK(ok|error|blocked), error_class text, sql text, row_count int, truncated bool,
-          duration_ms int,
-          model_requested text, model_served text, effort text, stop_reason text, request_id text,
-          ttft_ms int, tokens_in int, tokens_out int, tokens_cache_read int, tokens_cache_write int,
-          cost_usd numeric(10,6), prompt_version text, semantic_version text)
+          duration_ms int, model_requested text, model_served text, effort text, stop_reason text,
+          request_id text, ttft_ms int, tokens_in int, tokens_out int, tokens_cache_read int,
+          tokens_cache_write int, cost_usd numeric(10,6), prompt_version text, semantic_version text)
 feedback(id bigint PK, ts timestamptz, user_id text, message_id uuid → message, category text, comment text,
-         consent_question bool, status text CHECK(nouveau|traite|rejete), reject_reason text,
-         promoted_to_dev bool default false, handled_by text, handled_at timestamptz)
-eval_run(id bigint PK, ts timestamptz, split text CHECK(test|dev|intent|followup|security|regression|analysis),
-         ablation text CHECK(none|a|b|c|d|e), model_requested text, model_served text, effort text,
-         prompt_version text, tools_hash text, semantic_version text, examples_hash text, git_sha text,
-         data_hash text, reference_date date, n int, pass1 numeric, pass3 numeric, ci_low numeric,
-         ci_high numeric, cost_usd numeric(10,4), rerun bool)
-eval_result(run_id bigint → eval_run, question_id text, category text, trap text, passes int /* 0 à 3 */,
-            expected jsonb, got jsonb, latency_ms int[], terminal_tool text)
-audit_access_log(id bigint PK, ts timestamptz, actor_id text, action text, target_trace_id text)
-analysis(id bigint PK, ts timestamptz, user_id text, period_start date, period_end date, region text,
-         semantic_version text, model_served text, payload jsonb /* DashboardAnalysis */, trace_id text)
+         consent_question bool, question_text text /* seulement avec consentement */,
+         status text CHECK(nouveau|traite|rejete), reject_reason text, promoted_to_dev bool default false,
+         handled_by text, handled_at timestamptz)
+eval_run(id bigint PK, ts timestamptz, split text, ablation text, prompt_version text, semantic_version text,
+         model_id text, git_sha text, data_hash text, reference_date date, n int, n_correct int,
+         pass1 numeric, pass3 numeric, ci_low numeric, ci_high numeric, cache_off bool,
+         report jsonb /* traçabilité complète : modèle servi, effort, hashes, jalon, coût, latence */)
+eval_result(id bigint PK, run_id bigint → eval_run, question_id text, category text, trap text,
+            passes int /* 0 à 3 */, expected jsonb, got jsonb)
+audit_access_log(id bigint PK, ts timestamptz, actor_sub text, actor_role text, action text,
+                 target_trace_id text, details jsonb)
+analysis(id bigint PK, ts timestamptz, period_start date, period_end date, region text,
+         semantic_version text, model_id text, payload jsonb /* DashboardAnalysis */, data_hash text, trace_id text)
 ```
 
-Les colonnes de `query_log` suivent `QueryLogRecord` (`decision_core.models`) ; la colonne `step` relie un appel LLM et les appels d'outils qu'il a déclenchés. Les utilisateurs n'ont pas de table locale : Keycloak est la source unique (`user_id` = claim `sub` dans `conversation`, `feedback`, `analysis` ; pseudonyme HMAC dans `query_log`). Le texte de la question n'est pas stocké dans `query_log` (condensat seulement) : il vit dans `message`, visible de son propriétaire.
+Catégories de signalement : `chiffre_faux`, `mauvaise_comprehension`, `periode_ou_perimetre`, `refus_injustifie`, `autre`. Source de vérité du schéma : `packages/api/src/decision_api/migrations/versions/0001_schema_app.py`.
+
+Les colonnes de `query_log` suivent `QueryLogRecord` (`decision_core.models`) ; la colonne `step` relie un appel LLM et les appels d'outils qu'il a déclenchés. Les utilisateurs n'ont pas de table locale : Keycloak est la source unique (`user_id` = claim `sub` dans `conversation` et `feedback` ; pseudonyme HMAC `user_ref` dans `query_log`). Le texte de la question n'est pas stocké dans `query_log` (condensat seulement) : il vit dans `message`, visible de son propriétaire.
 
 Index : `conversation(user_id, created_at DESC)`, `message(conversation_id, created_at)`, `query_log(ts)`, `query_log(user_id, ts)`, `query_log(trace_id, step)`, `feedback(status, ts)`, `eval_result(run_id)`. Rétention du journal : 90 jours (`config.yaml`).
 
@@ -206,14 +209,14 @@ Toutes les routes sont servies sous `/api` par le proxy. Les rôles viennent de 
 | `GET /api/dashboard?period=&region=` | 6 KPI, période courante et précédente, dérivés (via `query_metric`) | authentifié |
 | `POST /api/dashboard/analysis` | Analyse de l'agent (workflow, un appel LLM) ; corps `{period, region}` ; écrit `app.analysis` | authentifié |
 | `POST /api/feedback` | Signaler une réponse (consentement explicite pour joindre la question) | propriétaire du message |
-| `GET /api/admin/ops?range=` | Exploitation et sécurité : latence, coût, taux de cache, blocages du garde, santé MCP | admin |
-| `POST /api/admin/ops/rights-test` | Test de droits de `agent_ro` (exécuté par le MCP) | admin |
-| `GET /api/admin/audit/queries` | Journal technique (condensats, sans texte de question) | analyste, admin |
+| `GET /api/admin/overview?range=` | Exploitation : requêtes, latence p50/p90, coût, taux de blocage du garde, santé | analyste, admin |
+| `GET /api/admin/security`, `POST /api/admin/security/rights-test` | Sécurité : blocages du garde, dernier test de droits de `agent_ro`. L'API n'a pas le DSN `agent_ro` : `rights-test` relit le rapport produit par `make rights-test` (`var/rights-test.json`) et journalise la lecture | admin |
+| `GET /api/admin/audit/queries` (+ `/export.csv`) | Journal technique (condensats, sans texte de question) ; l'export **écrit `audit_access_log`** | analyste, admin |
 | `GET /api/admin/audit/queries/{trace_id}` | Détail d'un appel ; **écrit `audit_access_log`** | analyste, admin |
 | `GET /api/admin/eval/runs`, `GET /api/admin/eval/runs/{id}` | Exécutions et résultats d'évaluation (lecture) | analyste, admin |
 | `GET /api/admin/feedback`, `PATCH /api/admin/feedback/{id}` | Signalements ; `traite`, `rejete` (motif obligatoire), promotion vers le dev | analyste, admin |
-| `GET /api/admin/config/kpis`, `GET /api/admin/config/semantic` | Catalogue de KPI et couche sémantique en lecture, avec `semantic_version` | analyste, admin |
-| `GET /api/admin/config/settings` | Paramètres en lecture (sans secret) | admin |
+| `GET /api/admin/kpis`, `GET /api/admin/semantic/{tables\|glossary\|examples}` | Catalogue de KPI et couche sémantique en lecture, avec `semantic_version` | analyste, admin |
+| `GET /api/admin/settings` | Paramètres en lecture (sans secret) et lien vers la procédure de PR | admin |
 
 Aucune route d'écriture de configuration ni de gestion d'utilisateurs. Plus de `GET /kpis/analysis`, de `/admin/users` ni de `/admin/change-requests`.
 

@@ -4,6 +4,7 @@ Garde SQL du serveur MCP (module `decision_sql_guard`) : bibliothèque pure, san
 
 ```python
 from decision_sql_guard import guard_sql, semantic_warnings
+
 res = guard_sql(sql, semantic, row_limit=1000, declared_scope={"statut": "reussie", "region_kind": "aucune"})
 res.ok, res.sql, res.tables, res.error, res.scope, res.warnings
 ```
