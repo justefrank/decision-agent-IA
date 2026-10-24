@@ -97,6 +97,49 @@ PAYLOADS: list[tuple[str, str]] = [
     ("trop_imbrique", "SELECT " + "(" * 60 + "1" + ")" * 60 + " FROM analytics.dim_date"),
     ("caractere_nul", "SELECT 1 FROM analytics.dim_date\x00; DROP TABLE x"),
     ("fonction_anonyme_inconnue", "SELECT md5(nom) FROM analytics.dim_agent"),
+    # F1 : mots-clés niladiques lus comme colonnes par sqlglot (Postgres renvoie l'identité du rôle).
+    ("niladiques_user_role", "SELECT user, current_role, system_user FROM analytics.dim_region"),
+    ("niladique_user", "SELECT user FROM analytics.dim_region"),
+    (
+        "niladique_current_role_where",
+        "SELECT region FROM analytics.dim_region WHERE current_role = 'agent_ro'",
+    ),
+    ("niladique_system_user", "SELECT system_user FROM analytics.dim_region"),
+    ("niladique_session_user", "SELECT session_user FROM analytics.dim_region"),
+    ("niladique_current_catalog", "SELECT current_catalog FROM analytics.dim_region"),
+    ("niladique_current_schema", "SELECT current_schema FROM analytics.dim_region"),
+    ("fonction_current_schema", "SELECT current_schema() FROM analytics.dim_region"),
+    ("fonction_current_database", "SELECT current_database() FROM analytics.dim_region"),
+    ("fonction_user", "SELECT user() FROM analytics.dim_region"),
+    ("niladique_casse_mixte", "SELECT Current_Role AS r FROM analytics.dim_region"),
+    ("niladique_order_by", "SELECT region FROM analytics.dim_region ORDER BY user"),
+    ("niladique_localtimestamp", "SELECT localtimestamp FROM analytics.dim_region"),
+    # F3 : condition de jointure non conjonctive ou sans égalité entre la table jointe et une autre.
+    (
+        "jointure_or_true",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_client c ON f.client_id = f.client_id OR true",
+    ),
+    (
+        "jointure_cle_or_true",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_client c ON (c.client_id = f.client_id OR 1 = 1)",
+    ),
+    (
+        "jointure_meme_alias",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_client c ON f.client_id = f.client_id",
+    ),
+    (
+        "jointure_true_and_meme_alias",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_client c ON TRUE AND c.client_id = c.client_id",
+    ),
+    (
+        "jointure_sans_table_jointe",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_client c ON c.client_id = f.client_id "
+        "JOIN analytics.dim_date d ON c.client_id = f.client_id",
+    ),
+    (
+        "jointure_colonnes_non_qualifiees",
+        f"SELECT COUNT(*) FROM {F} JOIN analytics.dim_date d ON date_id = date_id",
+    ),
 ]
 
 
@@ -218,6 +261,21 @@ LEGIT: list[tuple[str, str]] = [
         "COUNT(*) DESC) AS rn FROM analytics.fact_transaction f JOIN analytics.dim_region r "
         "ON r.region_id = f.region_agent_id WHERE f.agent_id <> -1 GROUP BY r.region, f.agent_id) t "
         "WHERE rn <= 3",
+    ),
+    (
+        "jointure_conjonctive_or_imbrique",
+        "SELECT COUNT(*) FROM analytics.fact_transaction f JOIN analytics.dim_client c "
+        "ON c.client_id = f.client_id AND (c.segment = 'entreprise' OR c.segment = 'commercant') "
+        "WHERE f.statut = 'reussie'",
+    ),
+    (
+        "jointure_table_non_aliasee",
+        "SELECT COUNT(*) FROM analytics.fact_transaction f JOIN analytics.dim_client "
+        "ON dim_client.client_id = f.client_id WHERE f.statut = 'reussie'",
+    ),
+    (
+        "colonne_qualifiee_nommee_user_autorisee",
+        'SELECT r."user" FROM (SELECT region AS "user" FROM analytics.dim_region) r',
     ),
 ]
 

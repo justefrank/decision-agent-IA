@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 import anyio
 import psycopg
@@ -357,3 +357,88 @@ async def test_describe_schema(service: ToolService, fixture_data: Fixture) -> N
     assert statut["values"] == ["reussie", "echouee"]
     bad = await service.describe_schema({"table": "pg_authid"})
     assert not bad.ok and bad.error and bad.error.error_class == "invalid_params"
+
+
+# --- Constats de revue : texte libre (E1), couverture des données (D3) ------------------------
+
+
+def _bounds(fx: Fixture) -> tuple[date, date]:
+    days = sorted(t.day for t in fx.txns)
+    return days[0], days[-1]
+
+
+async def test_run_query_free_text_sous_alias_et_fonction(
+    service: ToolService, fixture_data: Fixture
+) -> None:
+    r = await service.run_query(
+        {
+            "sql": "SELECT agent_id, nom AS libelle, upper(ville) AS l2, count(DISTINCT nom) AS n "
+            "FROM analytics.dim_agent GROUP BY 1, 2, 3",
+            "declared_scope": {"statut": "toutes", "region_kind": "aucune"},
+        }
+    )
+    assert r.ok, r.error
+    assert {c.name: c.free_text for c in r.columns} == {
+        "agent_id": False,
+        "libelle": True,
+        "l2": True,
+        "n": False,  # entier : ne restitue pas le texte
+    }
+
+
+async def test_query_metric_nom_free_text(service: ToolService, fixture_data: Fixture) -> None:
+    r = await service.query_metric(
+        {"metrics": ["revenus_frais"], "period": MARS, "group_by": ["agent"], "order": "desc", "limit": 3}
+    )
+    assert r.ok, r.error
+    assert {c.name: c.free_text for c in r.columns}["nom"] is True
+
+
+async def test_niladiques_refuses(service: ToolService, fixture_data: Fixture) -> None:
+    r = await service.run_query(
+        {
+            "sql": "SELECT user, current_role, system_user FROM analytics.dim_region",
+            "declared_scope": {"statut": "toutes", "region_kind": "aucune"},
+        }
+    )
+    assert not r.ok and r.error and r.error.error_class == "guard_blocked"
+
+
+async def test_describe_schema_bornes_et_texte_libre(service: ToolService, fixture_data: Fixture) -> None:
+    lo, hi = _bounds(fixture_data)
+    r = await service.describe_schema({"table": "dim_agent"})
+    assert r.ok and r.payload
+    assert r.payload["data_bounds"] == {"start": lo.isoformat(), "end": hi.isoformat()}
+    cols = {c["name"]: c for c in r.payload["tables"][0]["columns"]}
+    assert cols["nom"]["free_text"] and "distinct_values" not in cols["nom"]
+    assert "distinct_values" not in cols["ville"]
+
+
+async def test_comparaison_hors_donnees(service: ToolService, fixture_data: Fixture) -> None:
+    lo, _ = _bounds(fixture_data)
+    jan = {"start": date(lo.year + 1, 1, 1).isoformat(), "end": date(lo.year + 1, 1, 31).isoformat()}
+    assert date(lo.year, 1, 31) < lo  # janvier de l'année précédente : aucune donnée
+    r = await service.query_metric(
+        {"metrics": ["volume_transactions"], "period": jan, "compare_to": "previous_year"}
+    )
+    assert not r.ok and r.error and r.error.error_class == "invalid_params"
+    assert f"Période de comparaison hors des données (données du {lo.isoformat()} au " in r.error.message
+
+
+async def test_couverture_partielle(service: ToolService, fixture_data: Fixture) -> None:
+    lo, hi = _bounds(fixture_data)
+    start = (lo - timedelta(days=5)).replace(year=lo.year + 1)
+    period = {"start": start.isoformat(), "end": (start + timedelta(days=9)).isoformat()}
+    r = await service.query_metric(
+        {"metrics": ["volume_transactions"], "period": period, "compare_to": "previous_year"}
+    )
+    assert r.ok, r.error
+    assert any("comparaison partielle : 5 jours sur 10 couverts" in w for w in r.warnings), r.warnings
+    assert r.params and r.params["coverage"]["comparison"] == {
+        "days": 10,
+        "covered_days": 5,
+        "complete": False,
+    }
+    tail = {"start": (hi - timedelta(days=4)).isoformat(), "end": (hi + timedelta(days=5)).isoformat()}
+    r2 = await service.query_metric({"metrics": ["volume_transactions"], "period": tail})
+    assert r2.ok and any("période partielle : 5 jours sur 10 couverts" in w for w in r2.warnings), r2.warnings

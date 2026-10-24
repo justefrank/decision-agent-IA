@@ -7,6 +7,7 @@ from decision_sql_guard.guard import (
     guard_sql,
     normalize_function_name,
 )
+from decision_sql_guard.provenance import free_text_columns, free_text_projections
 from decision_sql_guard.semantic_rules import SemanticIssue, extract_scope, semantic_issues, semantic_warnings
 
 __all__ = [
@@ -15,6 +16,8 @@ __all__ = [
     "GuardResult",
     "SemanticIssue",
     "extract_scope",
+    "free_text_columns",
+    "free_text_projections",
     "guard_sql",
     "normalize_function_name",
     "semantic_issues",

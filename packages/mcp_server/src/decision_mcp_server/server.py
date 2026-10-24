@@ -188,7 +188,9 @@ def main() -> None:
 
     async def run() -> None:
         try:
-            await server.run_stdio_async()
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(service.data_bounds)  # bornes des données en cache dès le démarrage
+                await server.run_stdio_async()
         finally:
             if db is not None:
                 with anyio.CancelScope(shield=True):

@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import date
 from typing import Any
 
 from decision_core.models import ColumnInfo, ToolError, ToolResult
 from decision_core.semantic import SemanticLayer
-from decision_sql_guard import guard_sql, semantic_issues
+from decision_sql_guard import free_text_projections, guard_sql, semantic_issues
 
-from decision_mcp_server.compiler import CompileError, compile_query_metric, parse_params
+from decision_mcp_server.compiler import CompileError, compile_query_metric, date_from_id, parse_params
 from decision_mcp_server.db import Database, ExecutionError
 
 log = logging.getLogger("decision_mcp_server.tools")
@@ -34,6 +35,41 @@ class ToolService:
             names.add(tname)
             names.update((spec.get("columns") or {}).keys())
         self.allowed_names = names
+        self._bounds: tuple[date, date] | None = None
+
+    async def data_bounds(self) -> tuple[date, date] | None:
+        """Premier et dernier jour des données (min/max de f.date_id), mis en cache au premier succès.
+
+        Appelé au démarrage du serveur ; un échec n'est pas mis en cache (nouvel essai au prochain appel).
+        """
+        if self._bounds is not None or self.db is None:
+            return self._bounds
+        sql = "SELECT MIN(f.date_id), MAX(f.date_id) FROM analytics.fact_transaction f"
+        guard = guard_sql(sql, self.semantic, row_limit=1)
+        if not guard.ok or guard.sql is None:
+            return None
+        try:
+            res = await self.db.execute(
+                guard.sql, None, row_limit=1, timeout_s=self.timeout_s, allowed_names=self.allowed_names
+            )
+        except ExecutionError as exc:
+            log.warning(json.dumps({"event": "data_bounds_failed", "error": exc.error.message}))
+            return None
+        except Exception as exc:  # pool indisponible… : pas de contrôle de couverture, pas de plantage
+            log.warning(json.dumps({"event": "data_bounds_failed", "error": type(exc).__name__}))
+            return None
+        if res.rows and res.rows[0][0] is not None and res.rows[0][1] is not None:
+            self._bounds = (date_from_id(int(res.rows[0][0])), date_from_id(int(res.rows[0][1])))
+            log.info(
+                json.dumps(
+                    {
+                        "event": "data_bounds",
+                        "start": self._bounds[0].isoformat(),
+                        "end": self._bounds[1].isoformat(),
+                    }
+                )
+            )
+        return self._bounds
 
     # --- utilitaires -------------------------------------------------------------------------
 
@@ -76,7 +112,7 @@ class ToolService:
         started = time.monotonic()
         try:
             params = parse_params(args)
-            compiled = compile_query_metric(params, self.semantic)
+            compiled = compile_query_metric(params, self.semantic, await self.data_bounds())
         except CompileError as exc:
             return self._error("query_metric", exc.error, started, certified=True)
         guard = guard_sql(compiled.sql, self.semantic, row_limit=self.row_limit, allow_placeholders=True)
@@ -208,7 +244,9 @@ class ToolService:
                 tables=guard.tables,
                 warnings=warnings,
             )
-        columns = [self._describe_column(c) for c in res.columns]
+        columns = self._mark_free_text(
+            [self._describe_column(c) for c in res.columns], guard.ast, guard.tables
+        )
         result = ToolResult(
             tool="run_query",
             ok=True,
@@ -226,6 +264,29 @@ class ToolService:
         self._log(result)
         return result
 
+    def _mark_free_text(self, columns: list[ColumnInfo], ast: Any, tables: list[str]) -> list[ColumnInfo]:
+        """`free_text` depuis le lignage de l'AST validé (E1) ; échec fermé si le lignage est incalculable.
+
+        Une projection numérique ou booléenne (COUNT(DISTINCT nom), nom = 'x') ne restitue pas le texte :
+        elle n'est pas marquée.
+        """
+        flags = free_text_projections(ast, self.semantic)
+        if flags is None or len(flags) != len(columns):
+            schema = self.semantic.tables["schema"]
+            sensitive_tables = {
+                f"{schema}.{t}"
+                for t, spec in self.semantic.tables["tables"].items()
+                if any((c or {}).get("free_text") for c in (spec.get("columns") or {}).values())
+            }
+            exposed = bool(sensitive_tables & set(tables))
+            flags = [exposed] * len(columns)
+        return [
+            c.model_copy(update={"free_text": True})
+            if flag and c.type not in ("integer", "numeric", "boolean")
+            else c
+            for c, flag in zip(columns, flags, strict=True)
+        ]
+
     def _describe_column(self, col: ColumnInfo) -> ColumnInfo:
         """Rôle et unité déduits du nom et du type (calcul ad hoc : heuristique documentée)."""
         name = col.name.lower()
@@ -236,7 +297,14 @@ class ToolService:
             return col.model_copy(update={"role": "period", "unit": "text"})
         if col.type == "text" or col.type == "boolean":
             return col.model_copy(update={"role": "dimension", "unit": "text"})
-        if name.endswith("_id") or name in ("annee", "mois", "trimestre", "semaine_iso", "jour_semaine"):
+        if name.endswith("_id") or name in (
+            "annee",
+            "annee_iso",
+            "mois",
+            "trimestre",
+            "semaine_iso",
+            "jour_semaine",
+        ):
             return col.model_copy(update={"role": "dimension", "unit": "id"})
         unit = next((u for k, u in units.items() if k in name), "count" if col.type == "integer" else None)
         return col.model_copy(update={"role": "measure", "unit": unit})
@@ -265,6 +333,9 @@ class ToolService:
             selected = list(tables)
         payload: dict[str, Any] = {"schema": schema, "semantic_version": self.semantic.version, "tables": []}
         warnings: list[str] = []
+        bounds = await self.data_bounds()
+        if bounds is not None:
+            payload["data_bounds"] = {"start": bounds[0].isoformat(), "end": bounds[1].isoformat()}
         regions = list(self.semantic.kpis.get("regions") or [])
         for tname in selected:
             spec = tables[tname]

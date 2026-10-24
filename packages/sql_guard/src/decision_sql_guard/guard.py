@@ -160,7 +160,39 @@ DENIED_FUNCTIONS = frozenset(
         "inet_server_addr",
         "current_user",
         "session_user",
+        "current_role",
+        "system_user",
+        "current_catalog",
+        "current_schema",
+        "current_schemas",
+        "current_database",
+        "inet_client_addr",
+        "inet_server_port",
+        "user",
     }
+)
+
+# Mots-clés SQL niladiques (sans parenthèses) que sqlglot lit comme des colonnes non qualifiées :
+# Postgres les évalue comme fonctions système (identité, base, horloge). Refusés hors guillemets.
+NILADIC_KEYWORDS = frozenset(
+    {
+        "user",
+        "current_user",
+        "current_role",
+        "session_user",
+        "system_user",
+        "current_catalog",
+        "current_schema",
+        "current_database",
+        "current_date",
+        "current_time",
+        "current_timestamp",
+        "localtime",
+        "localtimestamp",
+    }
+)
+_CLOCK_KEYWORDS = frozenset(
+    {"current_date", "current_time", "current_timestamp", "localtime", "localtimestamp"}
 )
 
 # Arguments scalaires admis par type de nœud ; tout autre argument non vide est refusé.
@@ -471,6 +503,7 @@ def _validate(root: exp.Expression, semantic: SemanticLayer, *, allow_placeholde
             db = node.args.get("db")
             if db is not None and normalize_identifier(db) != schema:
                 raise GuardViolation(f"Seul le schéma {schema} est autorisé.")
+            _check_niladic(node)
         elif isinstance(node, exp.DataType):
             if node.this not in ALLOWED_CAST_TYPES:
                 raise GuardViolation(
@@ -499,14 +532,77 @@ def _check_join(node: exp.Join) -> None:
             "Écrire JOIN analytics.<table> x ON x.cle = f.cle.",
         )
     if on is not None:
-        has_key = any(
-            isinstance(eq.left, exp.Column) and isinstance(eq.right, exp.Column) for eq in on.find_all(exp.EQ)
+        _check_join_condition(node, on)
+
+
+def _check_niladic(node: exp.Column) -> None:
+    """Refuse `user`, `current_role`, `system_user`… lus comme colonnes sans table (fonctions système)."""
+    ident = node.this
+    if node.args.get("table") is not None or not isinstance(ident, exp.Identifier) or ident.quoted:
+        return
+    name = ident.this.lower()
+    if name in _CLOCK_KEYWORDS:
+        raise GuardViolation(
+            "Date système interdite (CURRENT_DATE, now()…).",
+            "Les périodes se calculent depuis REFERENCE_DATE : écrire les bornes en littéraux.",
         )
-        if not has_key:
-            raise GuardViolation(
-                "Condition de jointure sans égalité entre deux colonnes (produit cartésien).",
-                "La condition ON doit comparer deux colonnes, par exemple ON d.date_id = f.date_id.",
-            )
+    if name in NILADIC_KEYWORDS:
+        raise GuardViolation(f"Fonction interdite : {name}.", "Fonction système interdite.")
+
+
+def _join_target(node: exp.Join) -> str | None:
+    """Nom par lequel la table jointe est référencée (alias, sinon nom de table)."""
+    target = node.this
+    alias = target.args.get("alias") if isinstance(target, exp.Expression) else None
+    if isinstance(alias, exp.TableAlias) and alias.this is not None:
+        return normalize_identifier(alias.this)
+    if isinstance(target, exp.Table):
+        return normalize_identifier(target.this)
+    return None
+
+
+def _conjuncts(cond: exp.Expression) -> list[exp.Expression]:
+    cond = cond.unnest()
+    if isinstance(cond, exp.And):
+        return _conjuncts(cond.left) + _conjuncts(cond.right)
+    return [cond]
+
+
+def _check_join_condition(node: exp.Join, on: exp.Expression) -> None:
+    """Condition conjonctive dont une égalité relie la table jointe à une autre source (F3).
+
+    `ON f.a = f.b OR true` ou `ON TRUE AND f.a = f.a` reviennent à un produit cartésien : refusés.
+    """
+    hint = (
+        "Écrire JOIN analytics.<table> x ON x.cle = f.cle (AND … facultatifs, pas de OR au premier niveau)."
+    )
+    parts = _conjuncts(on)
+    if isinstance(on.unnest(), exp.Or):
+        raise GuardViolation(
+            "OR au premier niveau d'une condition de jointure : interdit (produit cartésien).", hint
+        )
+    target = _join_target(node)
+    for part in parts:
+        if not (
+            isinstance(part, exp.EQ)
+            and isinstance(part.left, exp.Column)
+            and isinstance(part.right, exp.Column)
+        ):
+            continue
+        sides = {
+            normalize_identifier(part.left.args.get("table")),
+            normalize_identifier(part.right.args.get("table")),
+        }
+        if None in sides or len(sides) != 2:
+            continue
+        if target is not None and target in sides:
+            return
+    raise GuardViolation(
+        "Condition de jointure sans égalité entre une colonne de la table jointe et une colonne d'une autre "
+        "table (produit cartésien).",
+        "La condition ON doit comparer deux colonnes qualifiées de part et d'autre, par exemple "
+        "ON d.date_id = f.date_id.",
+    )
 
 
 def _check_table(node: exp.Table, schema: str, table_names: set[str], ctes: set[str]) -> str:

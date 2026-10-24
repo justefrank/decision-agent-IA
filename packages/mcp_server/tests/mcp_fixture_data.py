@@ -48,7 +48,8 @@ DROP TABLE IF EXISTS analytics.fact_transaction, analytics.dim_client, analytics
 CREATE TABLE analytics.dim_region (region_id integer PRIMARY KEY, region text NOT NULL, pays text NOT NULL);
 CREATE TABLE analytics.dim_date (
   date_id integer PRIMARY KEY, date date NOT NULL UNIQUE, jour_semaine smallint, semaine_iso smallint,
-  mois smallint, nom_mois text, trimestre smallint, annee smallint, est_weekend boolean, jour_ferie boolean,
+  annee_iso smallint, mois smallint, nom_mois text, trimestre smallint, annee smallint, est_weekend boolean,
+  jour_ferie boolean,
   debut_mois date, fin_mois date);
 CREATE TABLE analytics.dim_client (
   client_id integer PRIMARY KEY, date_inscription date,
@@ -156,6 +157,7 @@ def load_fixture(conn, fx: Fixture) -> None:  # conn : psycopg.Connection (dbt_o
                     d,
                     d.isoweekday(),
                     d.isocalendar()[1],
+                    d.isocalendar()[0],  # to_char(date, 'IYYY')::smallint
                     d.month,
                     MOIS_FR[d.month - 1],
                     (d.month - 1) // 3 + 1,
@@ -167,7 +169,9 @@ def load_fixture(conn, fx: Fixture) -> None:  # conn : psycopg.Connection (dbt_o
                 )
             )
             d += timedelta(days=1)
-        cur.executemany("INSERT INTO analytics.dim_date VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+        cur.executemany(
+            "INSERT INTO analytics.dim_date VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows
+        )
         cur.executemany(
             "INSERT INTO analytics.dim_client VALUES (%s, %s, %s, %s)",
             [(c, date(2024, 1, 1), r, s) for c, (r, s) in fx.clients.items()],

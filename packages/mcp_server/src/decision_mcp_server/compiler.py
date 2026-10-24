@@ -71,16 +71,24 @@ def _shift_year(d: date, years: int) -> date:
         return d.replace(year=d.year + years, day=28)
 
 
+def _shift_year_end(d: date, years: int) -> date:
+    """Fin de période décalée : le dernier jour de février reste le dernier jour de février."""
+    if d.month == 2 and d == _month_end(d):
+        return _month_end(date(d.year + years, 2, 1))
+    return _shift_year(d, years)
+
+
 def comparison_period(period: Period, compare_to: str) -> Period | None:
     """Période de comparaison.
 
     - previous_period : même durée juste avant ; si la période couvre des mois calendaires entiers,
       le même nombre de mois calendaires juste avant (mars → février, T1 → T4 précédent) ;
-    - previous_year : décalage d'un an (29 février → 28 février).
+    - previous_year : décalage d'un an (29 février → 28 février ; une fin au dernier jour de février
+      recule au dernier jour de février de l'année précédente, 28/02/2025 → 29/02/2024).
     """
     start, end = period.start, period.end
     if compare_to == "previous_year":
-        return Period(start=_shift_year(start, -1), end=_shift_year(end, -1))
+        return Period(start=_shift_year(start, -1), end=_shift_year_end(end, -1))
     if compare_to == "previous_period":
         if start.day == 1 and end == _month_end(end):
             months = (end.year - start.year) * 12 + end.month - start.month + 1
@@ -94,6 +102,59 @@ def comparison_period(period: Period, compare_to: str) -> Period | None:
 
 def date_id(d: date) -> int:
     return d.year * 10000 + d.month * 100 + d.day
+
+
+def date_from_id(value: int) -> date:
+    return date(value // 10000, (value // 100) % 100, value % 100)
+
+
+def _covered_days(start: date, end: date, bounds: tuple[date, date]) -> int:
+    lo, hi = max(start, bounds[0]), min(end, bounds[1])
+    return max(0, (hi - lo).days + 1)
+
+
+def _coverage(
+    period: Period, compare: Period | None, bounds: tuple[date, date] | None
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Couverture des périodes par les données (bornes min/max de f.date_id).
+
+    Période de comparaison entièrement hors données → CompileError (variation trompeuse) ; période
+    courante hors données avec comparaison → CompileError ; sans comparaison → avertissement explicite ;
+    couverture partielle → avertissement précis.
+    """
+    if bounds is None:
+        return None, []
+    span = f"données du {bounds[0].isoformat()} au {bounds[1].isoformat()}"
+    hint = (
+        f"Les données couvrent du {bounds[0].isoformat()} au {bounds[1].isoformat()} : choisir une période "
+        "couverte, ou retirer compare_to."
+    )
+    warnings: list[str] = []
+    coverage: dict[str, Any] = {"data_start": bounds[0].isoformat(), "data_end": bounds[1].isoformat()}
+    parts = [("current", period)] + ([("comparison", compare)] if compare is not None else [])
+    for key, per in parts:
+        assert per is not None
+        days = (per.end - per.start).days + 1
+        covered = _covered_days(per.start, per.end, bounds)
+        coverage[key] = {"days": days, "covered_days": covered, "complete": covered == days}
+        if key == "comparison":
+            if covered == 0:
+                raise CompileError(f"Période de comparaison hors des données ({span}).", hint)
+            if covered < days:
+                warnings.append(
+                    f"comparaison partielle : {covered} jours sur {days} couverts ({span}) ; "
+                    "la variation n'est pas comparable à période égale."
+                )
+        elif covered == 0:
+            if compare is not None:
+                raise CompileError(f"Période courante hors des données ({span}).", hint)
+            warnings.append(
+                f"période hors des données ({span}) : aucune transaction n'existe sur cette période, "
+                "les valeurs nulles ou vides ne sont pas une mesure."
+            )
+        elif covered < days:
+            warnings.append(f"période partielle : {covered} jours sur {days} couverts ({span}).")
+    return coverage, warnings
 
 
 # --- Validation ----------------------------------------------------------------------------------
@@ -208,7 +269,10 @@ def _check_metrics_and_dimensions(p: QueryMetricParams, semantic: SemanticLayer)
 # --- Compilation ---------------------------------------------------------------------------------
 
 
-def compile_query_metric(p: QueryMetricParams, semantic: SemanticLayer) -> CompiledQuery:
+def compile_query_metric(
+    p: QueryMetricParams, semantic: SemanticLayer, bounds: tuple[date, date] | None = None
+) -> CompiledQuery:
+    """`bounds` : premier et dernier jour des données (min/max de f.date_id), mis en cache par le serveur."""
     _check_metrics_and_dimensions(p, semantic)
     dims = semantic.dimensions
     bind: dict[str, Any] = {"debut": date_id(p.period.start), "fin": date_id(p.period.end)}
@@ -220,6 +284,14 @@ def compile_query_metric(p: QueryMetricParams, semantic: SemanticLayer) -> Compi
     warnings: list[str] = []
 
     compare = comparison_period(p.period, p.compare_to)
+    if compare is not None and compare.start <= p.period.end and compare.end >= p.period.start:
+        raise CompileError(
+            f"Période de comparaison ({compare.start.isoformat()} – {compare.end.isoformat()}) chevauchant "
+            "la période courante : comparaison impossible sans double compte.",
+            "Réduire la période à un an au plus pour previous_year, ou comparer deux appels distincts.",
+        )
+    coverage, coverage_warnings = _coverage(p.period, compare, bounds)
+    warnings.extend(coverage_warnings)
     if compare is not None:
         bind["debut_comparaison"] = date_id(compare.start)
         bind["fin_comparaison"] = date_id(compare.end)
@@ -272,6 +344,7 @@ def compile_query_metric(p: QueryMetricParams, semantic: SemanticLayer) -> Compi
                         role="dimension",
                         unit="text",
                         label="Nom du point de service",
+                        free_text=True,  # dim_agent.nom : texte libre (tables.yaml)
                     )
                 )
         else:
@@ -358,6 +431,8 @@ def compile_query_metric(p: QueryMetricParams, semantic: SemanticLayer) -> Compi
         "bind": dict(bind),
         "semantic_version": semantic.version,
     }
+    if coverage is not None:
+        params["coverage"] = coverage
     return CompiledQuery(
         sql=sql,
         bind=bind,

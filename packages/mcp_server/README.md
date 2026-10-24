@@ -20,7 +20,19 @@ erreurs Postgres normalisées (classe SQLSTATE, noms `analytics` conservés, le 
 Annulation (`notifications/cancelled`) : `pg_cancel_backend` de la requête en cours.
 
 Comparaison : colonne `periode` ∈ {courante, comparaison}. `previous_period` = même durée juste avant,
-en mois calendaires si la période couvre des mois entiers (mars → février) ; `previous_year` = un an avant.
+en mois calendaires si la période couvre des mois entiers (mars → février) ; `previous_year` = un an avant
+(une fin au dernier jour de février recule au dernier jour de février). Comparaison chevauchant la période
+courante refusée (`invalid_params`).
+
+Couverture : bornes des données (min/max de `f.date_id`) lues au démarrage et mises en cache
+(`describe_schema` → `payload.data_bounds`). Période de comparaison (ou courante, avec comparaison) entièrement
+hors données → `invalid_params` ; couverture partielle ou période courante hors données → `warnings` et
+`params.coverage` ({data_start, data_end, current/comparison: {days, covered_days, complete}}).
+
+Texte libre : `ColumnInfo.free_text` vaut vrai pour `nom` (dimension agent) de `query_metric` et, pour
+`run_query`, pour toute projection non numérique dérivée de `dim_agent.nom`/`ville` d'après le lignage de
+l'AST validé (échec fermé : toutes les colonnes texte si le lignage est incalculable et dim_agent lue).
+`describe_schema` ne liste jamais de valeurs distinctes de ces colonnes.
 Classements : `limit` ≤ 50, tri sur la première métrique, une ligne lue en plus pour signaler les ex æquo.
 
 Tests : `uv run pytest packages/mcp_server -q`. Les tests marqués `db` utilisent le Postgres du port

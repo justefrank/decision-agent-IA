@@ -154,3 +154,97 @@ def test_dimension_non_supportee_donne_definition_canonique() -> None:
     assert "non supportée" in err.message
     assert err.hint and "Définition canonique de taux_echec" in err.hint
     assert "COUNT(*) FILTER (WHERE f.statut = 'echouee')" in err.hint and "run_query" in err.hint
+
+
+# --- Constats de revue : texte libre (E1), chevauchement (D4), fin février (D14), couverture (D3) ---
+
+BOUNDS = (date(2025, 4, 1), date(2026, 10, 15))
+
+
+def test_nom_agent_marque_free_text() -> None:
+    c = _compile(metrics=["revenus_frais"], group_by=["agent"], order="desc", limit=5)
+    flags = {col.name: col.free_text for col in c.columns}
+    assert flags == {"agent_id": False, "nom": True, "revenus_frais": False}
+
+
+@pytest.mark.parametrize(
+    "period",
+    [
+        {"start": "2025-01-01", "end": "2026-03-31"},  # 15 mois : recouvrement janv.-mars 2025
+        {"start": "2025-03-01", "end": "2026-03-01"},  # un an et un jour
+    ],
+)
+def test_comparaison_chevauchante_refusee(period: dict) -> None:
+    with pytest.raises(CompileError) as info:
+        _compile(period=period, compare_to="previous_year")
+    assert info.value.error.error_class == "invalid_params"
+    assert "chevauchant" in info.value.error.message
+
+
+def test_annee_exacte_sans_chevauchement() -> None:
+    c = _compile(period={"start": "2025-03-01", "end": "2026-02-28"}, compare_to="previous_year")
+    assert c.bind["fin_comparaison"] == 20250228 and c.bind["debut_comparaison"] == 20240301
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "cmp_start", "cmp_end"),
+    [
+        (date(2025, 2, 1), date(2025, 2, 28), date(2024, 2, 1), date(2024, 2, 29)),
+        (date(2025, 1, 1), date(2025, 2, 28), date(2024, 1, 1), date(2024, 2, 29)),
+        (date(2024, 2, 1), date(2024, 2, 29), date(2023, 2, 1), date(2023, 2, 28)),
+        (date(2026, 2, 10), date(2026, 2, 20), date(2025, 2, 10), date(2025, 2, 20)),
+    ],
+)
+def test_previous_year_fin_fevrier(start: date, end: date, cmp_start: date, cmp_end: date) -> None:
+    p = comparison_period(Period(start=start, end=end), "previous_year")
+    assert p is not None and (p.start, p.end) == (cmp_start, cmp_end)
+
+
+def _compile_bounds(**kw):
+    args = {"metrics": ["valeur_transferee"], "period": MARS, **kw}
+    return compile_query_metric(parse_params(args), SEM, BOUNDS)
+
+
+def test_comparaison_hors_donnees_refusee() -> None:
+    with pytest.raises(CompileError) as info:
+        _compile_bounds(period={"start": "2026-02-01", "end": "2026-02-28"}, compare_to="previous_year")
+    err = info.value.error
+    assert err.error_class == "invalid_params"
+    assert "Période de comparaison hors des données (données du 2025-04-01 au 2026-10-15)" in err.message
+
+
+def test_comparaison_partielle_signalee() -> None:
+    c = _compile_bounds(period={"start": "2026-03-15", "end": "2026-04-14"}, compare_to="previous_year")
+    assert any("comparaison partielle : 14 jours sur 31 couverts" in w for w in c.warnings)
+    cov = c.params["coverage"]
+    assert cov["data_start"] == "2025-04-01" and cov["data_end"] == "2026-10-15"
+    assert cov["current"] == {"days": 31, "covered_days": 31, "complete": True}
+    assert cov["comparison"] == {"days": 31, "covered_days": 14, "complete": False}
+
+
+def test_periode_courante_hors_donnees() -> None:
+    c = _compile_bounds(period={"start": "2027-01-01", "end": "2027-01-31"})
+    assert any(w.startswith("période hors des données (données du 2025-04-01") for w in c.warnings)
+    assert c.params["coverage"]["current"]["covered_days"] == 0
+    with pytest.raises(CompileError) as info:
+        _compile_bounds(period={"start": "2027-01-01", "end": "2027-01-31"}, compare_to="previous_period")
+    assert "Période courante hors des données" in info.value.error.message
+
+
+def test_periode_courante_partielle() -> None:
+    c = _compile_bounds(period={"start": "2026-10-01", "end": "2026-10-31"})
+    assert any("période partielle : 15 jours sur 31 couverts" in w for w in c.warnings)
+
+
+def test_couverture_complete_sans_avertissement() -> None:
+    c = _compile_bounds(compare_to="previous_period")
+    assert not c.warnings and c.params["coverage"]["comparison"]["complete"]
+
+
+def test_annee_iso_colonne_identifiant() -> None:
+    from decision_core.models import ColumnInfo
+    from decision_mcp_server.tools import ToolService
+
+    svc = ToolService(SEM, None)
+    col = svc._describe_column(ColumnInfo(name="annee_iso", type="integer", role="measure"))
+    assert col.role == "dimension" and col.unit == "id"
