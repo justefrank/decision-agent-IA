@@ -15,6 +15,8 @@ select
     j.date,
     extract(isodow from j.date)::smallint as jour_semaine,
     extract(week from j.date)::smallint as semaine_iso,
+    -- Année ISO 8601 : à combiner avec semaine_iso (29-31/12/2025 = semaine 1 de 2026).
+    extract(isoyear from j.date)::smallint as annee_iso,
     extract(month from j.date)::smallint as mois,
     (array[
         'janvier', 'février', 'mars', 'avril', 'mai', 'juin',

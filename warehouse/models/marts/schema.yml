@@ -38,6 +38,13 @@ models:
         data_type: smallint
         constraints: [{type: not_null}, {type: check, expression: "jour_semaine between 1 and 7"}]
       - name: semaine_iso
+        description: Semaine ISO 8601 (1-53). À regrouper avec annee_iso, jamais avec annee.
+        data_type: smallint
+        constraints: [{type: not_null}, {type: check, expression: "semaine_iso between 1 and 53"}]
+      - name: annee_iso
+        description: >-
+          Année ISO 8601 de la semaine (peut différer de annee fin décembre / début janvier :
+          le 29/12/2025 est en semaine 1 de 2026). Regrouper par (annee_iso, semaine_iso).
         data_type: smallint
         constraints: [{type: not_null}]
       - name: mois

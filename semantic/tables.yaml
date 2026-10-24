@@ -63,7 +63,10 @@ tables:
       date_id: {type: integer, key: primary, description: AAAAMMJJ}
       date: {type: date}
       jour_semaine: {type: smallint, description: "1 = lundi … 7 = dimanche (ISO)"}
-      semaine_iso: {type: smallint}
+      semaine_iso: {type: smallint, description: "Semaine ISO 8601 (1-53). Toujours regrouper avec annee_iso, jamais avec annee"}
+      annee_iso:
+        type: smallint
+        description: "Année ISO 8601 de la semaine, à utiliser avec semaine_iso : (annee_iso, semaine_iso). Diffère de annee autour du 1er janvier (29/12/2025 = semaine 1 de 2026)"
       mois: {type: smallint}
       nom_mois: {type: text}
       trimestre: {type: smallint}
