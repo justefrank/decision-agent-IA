@@ -1,0 +1,156 @@
+"""Tests unitaires du compilateur query_metric (sans base)."""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+from decision_core.models import Period, QueryMetricParams
+from decision_core.semantic import load_semantic
+from decision_mcp_server.compiler import CompileError, comparison_period, compile_query_metric, parse_params
+from decision_sql_guard import guard_sql
+
+SEM = load_semantic()
+MARS = {"start": "2026-03-01", "end": "2026-03-31"}
+
+
+def _compile(**kw):
+    args = {"metrics": ["volume_transactions"], "period": MARS, **kw}
+    return compile_query_metric(parse_params(args), SEM)
+
+
+@pytest.mark.parametrize("metric", list(SEM.metrics))
+def test_chaque_metrique(metric: str) -> None:
+    c = _compile(metrics=[metric])
+    assert SEM.metrics[metric]["sql"].split("(")[0] in c.sql
+    assert f"AS {metric}" in c.sql
+    assert c.bind == {"debut": 20260301, "fin": 20260331}
+    assert "%(debut)s" in c.sql and "2026" not in c.sql  # jamais interpolé
+    assert [col.name for col in c.columns] == [metric]
+    col = c.columns[0]
+    assert col.role == "measure" and col.unit == SEM.metrics[metric]["unit"]
+    assert col.label == SEM.metrics[metric]["label"]
+    g = guard_sql(c.sql, SEM, row_limit=1000, allow_placeholders=True)
+    assert g.ok, g.error
+    assert g.tables == ["analytics.dim_date", "analytics.fact_transaction"]
+
+
+def test_group_by_region_et_type() -> None:
+    c = _compile(group_by=["region_client", "type"])
+    assert "JOIN analytics.dim_region rc ON rc.region_id = f.region_client_id" in c.sql
+    assert "GROUP BY 1, 2" in c.sql
+    assert [x.name for x in c.columns] == ["region_client", "type", "volume_transactions"]
+    assert [x.role for x in c.columns] == ["dimension", "dimension", "measure"]
+    assert c.params["region_kind"] == "region_client"
+
+
+def test_dimension_agent_exclut_hors_agent() -> None:
+    c = _compile(metrics=["revenus_frais"], group_by=["agent"], order="desc", limit=5)
+    assert "f.agent_id <> -1" in c.sql
+    assert [x.name for x in c.columns] == ["agent_id", "nom", "revenus_frais"]
+    assert c.columns[0].unit == "id" and c.columns[1].unit == "text"
+    assert "ORDER BY 3 DESC NULLS LAST, 1, 2" in c.sql
+    assert c.sql.endswith("LIMIT 6")  # une ligne de plus pour les ex æquo
+    assert guard_sql(c.sql, SEM, row_limit=1000, allow_placeholders=True).ok
+
+
+@pytest.mark.parametrize(
+    ("grain", "name", "expr"),
+    [
+        ("day", "jour", "d.date"),
+        ("week", "semaine", "date_trunc('week', d.date)::date"),
+        ("month", "mois", "d.debut_mois"),
+        ("quarter", "trimestre", "date_trunc('quarter', d.date)::date"),
+    ],
+)
+def test_grains(grain: str, name: str, expr: str) -> None:
+    c = _compile(grain=grain)
+    assert f"{expr} AS {name}" in c.sql
+    assert c.columns[0].name == name and c.columns[0].role == "time" and c.columns[0].unit == "date"
+    assert "GROUP BY 1" in c.sql and "ORDER BY 1" in c.sql
+    assert guard_sql(c.sql, SEM, row_limit=1000, allow_placeholders=True).ok
+
+
+def test_comparaison_periode_precedente_mois_calendaire() -> None:
+    c = _compile(compare_to="previous_period")
+    assert c.bind["debut_comparaison"] == 20260201 and c.bind["fin_comparaison"] == 20260228
+    assert "THEN 'courante' ELSE 'comparaison' END AS periode" in c.sql
+    assert c.columns[0].name == "periode" and c.columns[0].role == "period"
+    assert "ORDER BY 1 DESC" in c.sql
+    assert c.params["compare_period"] == {"start": "2026-02-01", "end": "2026-02-28", "label": None}
+
+
+def test_comparaison_annee_precedente() -> None:
+    c = _compile(compare_to="previous_year")
+    assert c.bind["debut_comparaison"] == 20250301 and c.bind["fin_comparaison"] == 20250331
+
+
+def test_comparaison_duree_quelconque() -> None:
+    p = comparison_period(Period(start=date(2026, 3, 10), end=date(2026, 3, 16)), "previous_period")
+    assert p is not None and (p.start, p.end) == (date(2026, 3, 3), date(2026, 3, 9))
+    q = comparison_period(Period(start=date(2026, 1, 1), end=date(2026, 3, 31)), "previous_period")
+    assert q is not None and (q.start, q.end) == (date(2025, 10, 1), date(2025, 12, 31))
+    r = comparison_period(Period(start=date(2024, 2, 29), end=date(2024, 2, 29)), "previous_year")
+    assert r is not None and r.start == date(2023, 2, 28)
+
+
+def test_filtres_lies() -> None:
+    c = _compile(
+        filters=[
+            {"dimension": "region_agent", "values": ["Dakar", "Thiès"]},
+            {"dimension": "type", "values": ["depot"]},
+        ]
+    )
+    assert "ra.region IN (%(f0_0)s, %(f0_1)s)" in c.sql
+    assert "f.type IN (%(f1_0)s)" in c.sql
+    assert c.bind["f0_0"] == "Dakar" and c.bind["f0_1"] == "Thiès" and c.bind["f1_0"] == "depot"
+    assert "Dakar" not in c.sql
+
+
+def test_filtre_agent_entier() -> None:
+    c = _compile(filters=[{"dimension": "agent", "values": ["3", "7"]}])
+    assert c.bind["f0_0"] == 3 and c.bind["f0_1"] == 7
+    assert "f.agent_id <> -1" in c.sql
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "fragment"),
+    [
+        ({"metrics": ["chiffre_affaires"]}, "Métrique(s) inconnue(s)"),
+        ({"filters": [{"dimension": "region_agent", "values": ["Paris"]}]}, "Valeur(s) inconnue(s)"),
+        ({"filters": [{"dimension": "segment", "values": ["vip"]}]}, "Valeur(s) inconnue(s)"),
+        ({"filters": [{"dimension": "agent", "values": ["abc"]}]}, "identifiant invalide"),
+        ({"filters": [{"dimension": "agent", "values": ["-1"]}]}, "Hors agent"),
+        ({"group_by": ["ville_agent"]}, "Paramètres query_metric invalides"),
+        ({"group_by": ["agent"], "limit": 51}, "Paramètres query_metric invalides"),
+        ({"group_by": ["agent"], "limit": 5, "compare_to": "previous_period"}, "Combinaison non supportée"),
+        ({"limit": 5}, "group_by"),
+        ({"period": {"start": "2026-03-31", "end": "2026-03-01"}}, "Période invalide"),
+        ({"group_by": ["type", "type"]}, "group_by"),
+    ],
+)
+def test_erreurs_actionnables(kwargs: dict, fragment: str) -> None:
+    with pytest.raises(CompileError) as info:
+        _compile(**kwargs)
+    err = info.value.error
+    assert err.error_class == "invalid_params"
+    assert fragment in err.message
+    assert err.hint
+
+
+def test_dimension_non_supportee_donne_definition_canonique() -> None:
+    import copy
+    from dataclasses import replace
+
+    kpis = copy.deepcopy(SEM.kpis)
+    kpis["metrics"]["taux_echec"]["dimensions"] = ["region_agent", "region_client", "type"]
+    sem = replace(SEM, kpis=kpis)
+    params = QueryMetricParams.model_validate(
+        {"metrics": ["taux_echec"], "period": MARS, "group_by": ["segment"]}
+    )
+    with pytest.raises(CompileError) as info:
+        compile_query_metric(params, sem)
+    err = info.value.error
+    assert "non supportée" in err.message
+    assert err.hint and "Définition canonique de taux_echec" in err.hint
+    assert "COUNT(*) FILTER (WHERE f.statut = 'echouee')" in err.hint and "run_query" in err.hint
