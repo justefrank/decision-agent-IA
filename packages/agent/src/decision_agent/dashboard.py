@@ -27,11 +27,11 @@ from decision_core.models import AnalysisFinding, DashboardAnalysis, Period, Que
 from decision_agent import periods
 from decision_agent.facts import FactRegistry, ResultEntry
 from decision_agent.formatting import format_value, render_text
-from decision_agent.llm import LLMClient, LLMError, LLMRequest, cost_usd
+from decision_agent.llm import LLMClient, LLMError, LLMRequest, cost_usd_prudent
 from decision_agent.prompts import ANALYSIS_SCHEMA, ANALYSIS_SYSTEM, analysis_prompt_version
 from decision_agent.state import normalize
 from decision_agent.tools import METRICS, ToolClient
-from decision_agent.validator import extract_numeric_literals_fr, validate_text
+from decision_agent.validator import NUMBER_KINDS, extract_numeric_literals_fr, validate_text
 
 LogCb = Callable[[QueryLogRecord], Awaitable[None]] | None
 TOOL_TIMEOUT_S = 10.0
@@ -135,7 +135,10 @@ async def _collect(
         for m in analysis_rules()["regional_deviation"]["metrics"]:
             by_kind.setdefault(_region_kind_for(m, semantic), []).append(m)
         for kind, metrics in by_kind.items():
-            params = QueryMetricParams(metrics=metrics, period=period, group_by=[kind])
+            # comparaison par région : la variation régionale se compare à la variation nationale
+            params = QueryMetricParams(
+                metrics=metrics, period=period, group_by=[kind], compare_to="previous_period"
+            )
             step += 1
             entry = await _call_metric(
                 tools,
@@ -323,43 +326,128 @@ def build_candidates(col: _Collected, semantic: Any, rules: dict[str, Any] | Non
             and tile["value"] >= alert
         ):
             raw.append((tile["value"] / alert, "À surveiller", m, "elevee", base[:1], "failure_rate_alert"))
+    national_variation = {
+        t["metric"]: t["fact_ids"].get("variation")
+        for t in _tiles(col, semantic)
+        if t.get("available") and t.get("fact_ids", {}).get("variation")
+    }
+    regional = _regional_candidates(col, semantic, rules, worse, national_variation)
+    # Priorité : constats nationaux (variation significative, alerte) avant les écarts régionaux, pour
+    # qu'ils restent dans les candidats envoyés au modèle ; puis saillance décroissante.
+    national = [(0, *r) for r in raw]
+    ranked = sorted(
+        national + [(1, *r) for r in regional],
+        key=lambda r: (r[0], -round(r[1], 9), r[3], r[5][0] if r[5] else ""),
+    )
+    return [
+        Candidate(id=f"c{i}", tag=t, metric=m, confidence=c, facts=f, salience=round(sal, 4), rule=rule)
+        for i, (_, sal, t, m, c, f, rule) in enumerate(ranked, 1)
+    ]
+
+
+_EXCLUDED_REGIONS = ("Non applicable", "-1", "None")
+
+
+def _regional_candidates(
+    col: _Collected,
+    semantic: Any,
+    rules: dict[str, Any],
+    worse: set[str],
+    national_variation: dict[str, str],
+) -> list[tuple[float, str, str, str, list[str], str]]:
+    """Écarts régionaux normalisés : jamais sur des totaux bruts (la taille de Dakar n'est pas un écart).
+
+    - taux (unité ratio / pct) : écart à la moyenne inter-régions, en écarts-types, sur la période courante ;
+    - volumes et montants : variation de la région comparée à la variation nationale (en points de %).
+    Au plus un constat par région (le plus saillant).
+    """
     rd = rules["regional_deviation"]
+    reg = col.registry
+    gap_min = float(rd.get("variation_gap_pct", 10.0))
+    best: dict[str, tuple[float, str, str, str, list[str], str]] = {}
+
+    def keep(region: str, cand: tuple[float, str, str, str, list[str], str]) -> None:
+        cur = best.get(region)
+        if cur is None or (-cand[0], cand[2]) < (-cur[0], cur[2]):
+            best[region] = cand
+
+    def tag_for(m: str, high: bool) -> str:
+        if m in worse:
+            return "À surveiller" if high else "Écart favorable"
+        return "Écart favorable" if high else "Écart"
+
     for kind, entry in sorted(col.regional.items()):
         res = entry.result
         dim_j = next((i for i, c in enumerate(res.columns) if c.name == kind or c.role == "dimension"), None)
         if dim_j is None:
             continue
+        pj = next((i for i, c in enumerate(res.columns) if c.role == "period" or c.name == "periode"), None)
         for m in rd["metrics"]:
             j = next((i for i, c in enumerate(res.columns) if c.name == m), None)
             if j is None:
                 continue
-            pts = [
-                (row[dim_j], row[j], ids[j])
-                for row, ids in zip(res.rows, entry.cell_ids, strict=False)
-                if isinstance(row[j], int | float)
-                and ids[j]
-                and str(row[dim_j]) not in ("Non applicable", "-1")
+            unit = semantic.metrics.get(m, {}).get("unit") or res.columns[j].unit
+            if unit in ("ratio", "pct"):
+                pts = [
+                    (str(row[dim_j]), row[j], ids[j])
+                    for row, ids in zip(res.rows, entry.cell_ids, strict=False)
+                    if isinstance(row[j], int | float)
+                    and ids[j]
+                    and str(row[dim_j]) not in _EXCLUDED_REGIONS
+                    and (pj is None or str(row[pj]) == "courante")
+                ]
+                if len(pts) < rd["min_regions"]:
+                    continue
+                vals = [v for _, v, _ in pts]
+                mean, sd = statistics.fmean(vals), statistics.pstdev(vals)
+                if sd == 0:
+                    continue
+                for region, v, fid in pts:
+                    z = (v - mean) / sd
+                    if abs(z) >= rd["z_min"]:
+                        keep(
+                            region,
+                            (
+                                abs(z) / rd["z_min"],
+                                tag_for(m, z > 0),
+                                m,
+                                "moyenne",
+                                [fid],
+                                "regional_deviation",
+                            ),
+                        )
+                continue
+            nat_id = national_variation.get(m)
+            nat = reg.get(nat_id) if nat_id else None
+            if nat is None or not isinstance(nat.fact.value, int | float):
+                continue
+            region_vars = [
+                (str(rec.dims[0]), rec)
+                for did in entry.derived_ids
+                if (rec := reg.get(did)) is not None
+                and rec.kind == "variation"
+                and rec.column == m
+                and rec.dims
+                and str(rec.dims[0]) not in _EXCLUDED_REGIONS
+                and isinstance(rec.fact.value, int | float)
             ]
-            if len(pts) < rd["min_regions"]:
+            if len(region_vars) < rd["min_regions"]:
                 continue
-            vals = [v for _, v, _ in pts]
-            mean, sd = statistics.fmean(vals), statistics.pstdev(vals)
-            if sd == 0:
-                continue
-            for _region, v, fid in pts:
-                z = (v - mean) / sd
-                if abs(z) >= rd["z_min"]:
-                    high = z > 0
-                    if m in worse:
-                        tag = "À surveiller" if high else "Écart favorable"
-                    else:
-                        tag = "Écart favorable" if high else "Écart"
-                    raw.append((abs(z) / rd["z_min"], tag, m, "moyenne", [fid], "regional_deviation"))
-    raw.sort(key=lambda r: (-round(r[0], 9), r[2], r[4][0] if r[4] else ""))
-    return [
-        Candidate(id=f"c{i}", tag=t, metric=m, confidence=c, facts=f, salience=round(s, 4), rule=rule)
-        for i, (s, t, m, c, f, rule) in enumerate(raw, 1)
-    ]
+            for region, rec in region_vars:
+                gap = float(rec.fact.value) - float(nat.fact.value)
+                if abs(gap) >= gap_min:
+                    keep(
+                        region,
+                        (
+                            abs(gap) / gap_min,
+                            tag_for(m, gap > 0),
+                            m,
+                            "moyenne",
+                            [rec.fact.id, nat.fact.id],
+                            "regional_deviation",
+                        ),
+                    )
+    return [best[r] for r in sorted(best)]
 
 
 def _candidate_view(c: Candidate, reg: FactRegistry, semantic: Any) -> dict[str, Any]:
@@ -495,6 +583,7 @@ async def run_dashboard_analysis(
             facts=reg.public_facts(only_rendered=False),
         )
     model_id = step.model_served or settings.llm_model
+    cost, estimated = cost_usd_prudent(step.usage, model_id)
     if on_log is not None:
         await on_log(
             QueryLogRecord(
@@ -502,6 +591,7 @@ async def run_dashboard_analysis(
                 step=len(col.national) + len(col.regional) + 1,
                 tool="llm",
                 status="ok",
+                error_class="cout_estime_tarif_max" if estimated else None,
                 duration_ms=step.latency_ms,
                 model_requested=settings.llm_model,
                 model_served=step.model_served or None,
@@ -513,7 +603,7 @@ async def run_dashboard_analysis(
                 tokens_out=step.usage.output_tokens,
                 tokens_cache_read=step.usage.cache_read_tokens,
                 tokens_cache_write=step.usage.cache_write_tokens,
-                cost_usd=cost_usd(step.usage, model_id),
+                cost_usd=cost,
                 prompt_version=analysis_prompt_version(),
                 semantic_version=semantic.version,
             )
@@ -573,7 +663,7 @@ def validate_analysis(
             errs.append("constat sans source")
         hyp = f.get("hypothesis")
         hyp = str(hyp).strip() if hyp else None
-        if hyp and any(lit.kind in ("nombre", "multiplicatif") for lit in extract_numeric_literals_fr(hyp)):
+        if hyp and any(lit.kind in NUMBER_KINDS for lit in extract_numeric_literals_fr(hyp)):
             hyp = None  # une hypothèse ne porte pas de chiffre : on la retire
         if hyp and "{{" in hyp:
             hyp = None
@@ -583,7 +673,7 @@ def validate_analysis(
         findings.append(
             AnalysisFinding(
                 tag=cand.tag,
-                text=reg.deopaque(render_text(text, reg)),  # type: ignore[arg-type]
+                text=render_text(reg.deopaque(text), reg),  # type: ignore[arg-type]
                 confidence=cand.confidence,
                 sources=cand.facts,
                 hypothesis=hyp,
@@ -593,7 +683,7 @@ def validate_analysis(
     if not lead or validate_text(lead, reg, allowed_years=years, allow_hypothesis=False):
         lead = _template_lead(col, semantic)
     else:
-        lead = reg.deopaque(render_text(lead, reg))
+        lead = render_text(reg.deopaque(lead), reg)
     words = _catalog_words(semantic)
     follow = []
     for q in out.get("follow") or []:
@@ -603,7 +693,7 @@ def validate_analysis(
             q
             and len(q) <= 150
             and any(w in nq for w in words)
-            and not any(lit.kind in ("nombre", "multiplicatif") for lit in extract_numeric_literals_fr(q))
+            and not any(lit.kind in NUMBER_KINDS for lit in extract_numeric_literals_fr(q))
         ):
             follow.append(q)
     return findings, follow[:3], lead

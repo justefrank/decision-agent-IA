@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
-from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from decision_core.models import (
@@ -31,16 +31,17 @@ from decision_core.models import (
 )
 
 from decision_agent import periods
-from decision_agent.facts import FactRegistry, ResultEntry
+from decision_agent.facts import FactRegistry, ResultEntry, is_ranking
 from decision_agent.formatting import (
     choose_chart,
+    default_notes,
     evidence_chain,
     render_text,
     scope_label,
     table_from_entry,
     template_answer,
 )
-from decision_agent.llm import LLMClient, LLMError, LLMRequest, LLMStep, cost_usd
+from decision_agent.llm import LLMClient, LLMError, LLMRequest, LLMStep, cost_usd_prudent
 from decision_agent.prompts import (
     ABLATIONS,
     ANSWER_NOW,
@@ -61,12 +62,18 @@ from decision_agent.state import (
     state_from_run_query,
 )
 from decision_agent.tools import CAVEATS, DATA_TOOLS, TERMINAL_TOOLS, ToolClient
-from decision_agent.validator import extract_numeric_literals_fr, literals_to_refs, validate_answer
+from decision_agent.validator import (
+    NUMBER_KINDS,
+    extract_numeric_literals_fr,
+    literals_to_refs,
+    validate_answer,
+)
 
 EventCb = Callable[[StepEvent], Awaitable[None]] | None
 LogCb = Callable[[QueryLogRecord], Awaitable[None]] | None
 
 SQL_FIXABLE = {"sql_error", "guard_blocked", "semantic_warning"}
+COST_ESTIMATED = "cout_estime_tarif_max"  # modèle servi absent de PRICING
 REFUSAL_MODEL_TEXT = "Je ne peux pas répondre à cette demande."
 NO_ANSWER_TEXT = (
     "Je n'ai pas pu produire de réponse vérifiée à cette question. "
@@ -296,7 +303,10 @@ class _Run:
         self.event_n = 0
         self.llm_calls = 0
         self.tool_calls = 0
-        self.sql_fixes: dict[str, int] = defaultdict(int)
+        # Corrections SQL comptées par question (pas par `purpose`, contournable en reformulant) :
+        # tout run_query qui suit une erreur corrigeable est une correction, comptée avant l'exécution.
+        self.sql_errors = 0
+        self.sql_fixes = 0
         self.v_retry = 0
         self.cost = 0.0
         self.answer_now_sent = False
@@ -450,7 +460,8 @@ class _Run:
                 )
             )
             raise
-        c = cost_usd(step.usage, step.model_served or settings.llm_model) or 0.0
+        # modèle servi inconnu de la table : tarif le plus cher connu (le plafond de coût reste effectif)
+        c, estimated = cost_usd_prudent(step.usage, step.model_served or settings.llm_model)
         self.cost += c
         await self.log(
             QueryLogRecord(
@@ -458,6 +469,7 @@ class _Run:
                 step=step_n,
                 tool="llm",
                 status="ok",
+                error_class=COST_ESTIMATED if estimated else None,
                 duration_ms=step.latency_ms or int((time.monotonic() - t) * 1000),
                 model_requested=settings.llm_model,
                 model_served=step.model_served or None,
@@ -524,7 +536,7 @@ class _Run:
         timeout = min(self.lim.tool_timeout_cap_s, self.remaining() - 4)
         if timeout < 1:
             return _err(name, "timeout", "Plus assez de temps pour un appel d'outil : réponds maintenant.")
-        meta: dict[str, Any] = {"key": None, "period": None, "compare": None, "default": False}
+        meta: dict[str, Any] = {"attempt": 0, "period": None, "compare": None, "default": False}
         if name == "query_metric":
             try:
                 params, period, cmp, is_default = compile_metric_args(
@@ -532,6 +544,9 @@ class _Run:
                 )
             except (CompileError, ValueError) as e:
                 return _err(name, "invalid_params", str(e))
+            enforced = self._enforce_clarified(params)
+            if isinstance(enforced, ToolResult):
+                return enforced
             args = params.model_dump(mode="json")
             meta.update(period=period, compare=cmp, default=is_default)
         elif name == "run_query":
@@ -542,16 +557,27 @@ class _Run:
                 return _err(
                     name, "invalid_params", f"SQL trop long (maximum {self.lim.max_sql_chars} caractères)."
                 )
-            key = normalize(str(inp.get("purpose") or ""))[:80] or "run_query"
-            if self.sql_fixes[key] > self.lim.sql_fixes_per_query:
+            declared = inp.get("declared_scope") or {"statut": "reussie", "region_kind": "aucune"}
+            chosen_rk = self._clarified_value("region_kind")
+            declared_rk = declared.get("region_kind")
+            if chosen_rk and declared_rk in ("region_agent", "region_client") and declared_rk != chosen_rk:
                 return _err(
-                    name, "invalid_params", "Trop de corrections ; simplifie ou utilise query_metric."
+                    name,
+                    "invalid_params",
+                    f"L'utilisateur a choisi le sens de « région » {chosen_rk} : joins la colonne "
+                    f"{chosen_rk} et déclare region_kind = {chosen_rk}.",
                 )
-            meta["key"] = key
+            if self.sql_errors > 0:  # correction d'une erreur corrigeable précédente
+                self.sql_fixes += 1
+                if self.sql_fixes > self.lim.sql_fixes_per_query:
+                    return _err(
+                        name, "invalid_params", "Trop de corrections ; simplifie ou utilise query_metric."
+                    )
+                meta["attempt"] = self.sql_fixes
             args = {
                 "sql": sql,
                 "purpose": str(inp.get("purpose") or "")[:200],
-                "declared_scope": inp.get("declared_scope") or {"statut": "reussie", "region_kind": "aucune"},
+                "declared_scope": declared,
             }
         else:
             args = {"table": inp.get("table")}
@@ -569,8 +595,18 @@ class _Run:
         self, call: dict[str, Any], res: ToolResult, duration: int, meta: dict[str, Any]
     ) -> ResultEntry:
         name = call["name"]
-        key = meta.get("key")
-        attempt = self.sql_fixes[key] if key else 0
+        attempt = meta.get("attempt", 0)
+        chosen_rk = self._clarified_value("region_kind")
+        if name == "run_query" and res.ok and chosen_rk:
+            used_rk = (res.params or {}).get("region_kind")
+            if used_rk in ("region_agent", "region_client") and used_rk != chosen_rk:
+                # la portée extraite de l'AST contredit le choix de l'utilisateur : résultat écarté
+                res = _err(
+                    name,
+                    "semantic_warning",
+                    f"La requête utilise {used_rk} alors que l'utilisateur a choisi {chosen_rk} : "
+                    f"corrige la jointure de région.",
+                )
         status = (
             "ok"
             if res.ok
@@ -591,14 +627,13 @@ class _Run:
                 semantic_version=self.a.semantic.version,
             )
         )
-        if key and not res.ok and res.error and res.error.error_class in SQL_FIXABLE:
-            self.sql_fixes[key] += 1
+        if name == "run_query" and not res.ok and res.error and res.error.error_class in SQL_FIXABLE:
+            self.sql_errors += 1
         period, cmp = meta.get("period"), meta.get("compare")
-        purpose = None
         if name == "run_query":
-            purpose = meta["args"].get("purpose")
             period = period_from_scope(res.params) if res.ok else None
-        entry = self.registry.register(res, period=period, compare_period=cmp, purpose=purpose)
+        # le `purpose` du modèle n'est pas conservé : il ne doit jamais être montré au décideur
+        entry = self.registry.register(res, period=period, compare_period=cmp)
         if res.ok and name == "query_metric":
             params = meta["args"]
             self.states[entry.result_id] = state_from_query_metric(
@@ -610,6 +645,7 @@ class _Run:
                 question=self.question,
                 metric_defs=self.a.semantic.metrics,
                 clarified_fields={_field_key(k) for k in self.clarified},
+                clarified_values={_field_key(k): v for k, v in self.clarified.items()},
             )
             self.period_defaults[entry.result_id] = meta["default"]
         elif res.ok and name == "run_query":
@@ -618,13 +654,79 @@ class _Run:
             )
         return entry
 
+    def _clarified_value(self, field: str) -> Any:
+        """Valeur choisie par l'utilisateur pour un champ (après une clarification), sinon None."""
+        for k, v in self.clarified.items():
+            if _field_key(k) == field:
+                return v
+        return None
+
+    def _enforce_clarified(self, params: QueryMetricParams) -> ToolResult | None:
+        """Aligne les paramètres compilés sur le choix de l'utilisateur (sens de la région, KPI).
+
+        Le sens de la région est corrigé d'office ; un KPI choisi absent rend une erreur actionnable.
+        """
+        chosen_rk = self._clarified_value("region_kind")
+        if chosen_rk in ("region_agent", "region_client"):
+            other = "region_client" if chosen_rk == "region_agent" else "region_agent"
+            params.group_by = list(dict.fromkeys(chosen_rk if g == other else g for g in params.group_by))
+            for f in params.filters:
+                if f.dimension == other:
+                    f.dimension = chosen_rk  # type: ignore[assignment]
+        chosen_kpi = self._clarified_value("metrics")
+        if (
+            isinstance(chosen_kpi, str)
+            and chosen_kpi in self.a.semantic.metrics
+            and chosen_kpi not in params.metrics
+        ):
+            return _err(
+                "query_metric",
+                "invalid_params",
+                f"L'utilisateur a choisi le KPI {chosen_kpi} : inclus-le dans metrics.",
+            )
+        return None
+
+    def _needs_region_clarification(self, state: ResolvedState) -> bool:
+        return bool(
+            state.metrics
+            and not self.clarified
+            and state.region_kind is not None
+            and region_kind_needs_clarification(
+                state.metrics.value, self.a.semantic.metrics, state.region_kind.source
+            )
+        )
+
+    def _region_clarification(self) -> AssistantMessage:
+        """Clarification du sens de « région » produite par le code (repli, au lieu d'un gabarit)."""
+        options = [
+            {
+                "label": "Région du point de service",
+                "patch": {"field": "sens_region", "value": "region_agent"},
+            },
+            {"label": "Région du client", "patch": {"field": "sens_region", "value": "region_client"}},
+        ]
+        pending = make_pending(
+            self.question, "sens_region", "Quel sens de « région » souhaitez-vous ?", options
+        )
+        return self._pending_message(pending)
+
+    def _pending_message(self, pending: Any) -> AssistantMessage:
+        st = (self.base_state or ResolvedState()).model_copy(deep=True)
+        st.pending_clarification = pending
+        text = (
+            pending.question + "\n" + "\n".join(f"{i}. {o.label}" for i, o in enumerate(pending.options, 1))
+        )
+        return AssistantMessage(
+            kind="clarification", text=text, clarification=pending, resolved_state=st, trace_id=self.trace_id
+        )
+
     # --- outils terminaux ----------------------------------------------------------------
     async def _handle_terminal(self, call: dict[str, Any]) -> tuple[AssistantMessage | None, list[str]]:
         name, inp = call["name"], call["input"]
         if name == "refuse":
             cat = inp.get("category") or "autre"
             reason = str(inp.get("reason") or "").strip()[:300]
-            if not reason or any(lit.kind == "nombre" for lit in extract_numeric_literals_fr(reason)):
+            if not reason or any(lit.kind in NUMBER_KINDS for lit in extract_numeric_literals_fr(reason)):
                 reason = REFUSE_DEFAULT.get(cat, REFUSE_DEFAULT["autre"])
             return self._message("refusal", reason, caveats=[f"refus_{cat}"]), []
         if name == "ask_clarification":
@@ -649,13 +751,7 @@ class _Run:
         if errs:
             return None, errs
         pending = make_pending(self.question, inp.get("missing") or "autre", question, options)
-        st = (self.base_state or ResolvedState()).model_copy(deep=True)
-        st.pending_clarification = pending
-        text = question + "\n" + "\n".join(f"{i}. {o.label}" for i, o in enumerate(pending.options, 1))
-        msg = AssistantMessage(
-            kind="clarification", text=text, clarification=pending, resolved_state=st, trace_id=self.trace_id
-        )
-        return msg, []
+        return self._pending_message(pending), []
 
     def _primary(self, result_ids: list[str]) -> ResultEntry | None:
         for rid in result_ids:
@@ -693,6 +789,7 @@ class _Run:
             for e in self.registry.data_entries()
             if e.result.params and e.result.params.get("limit")
         }
+        counts, numbers = self._allowed_counts_and_numbers()
         errs += validate_answer(
             text,
             registry=self.registry,
@@ -701,6 +798,9 @@ class _Run:
             allowed_years=years,
             allowed_small_ints=smalls,
             accept_matched_literals=self.a.ablation == "e",
+            allowed_counts=counts,
+            allowed_numbers=numbers,
+            role=self.role,
         )
         if self.a.ablation == "d":  # sans validateur : seules les erreurs qui empêchent le rendu restent
             errs = [
@@ -711,14 +811,7 @@ class _Run:
         if self.a.ablation == "e" and not errs:
             text = literals_to_refs(text, self.registry)
         # Politique par champ : sens de « région » non précisé pour un KPI sans défaut
-        if (
-            state.metrics
-            and not self.clarified
-            and state.region_kind is not None
-            and region_kind_needs_clarification(
-                state.metrics.value, self.a.semantic.metrics, state.region_kind.source
-            )
-        ):
+        if self._needs_region_clarification(state):
             errs.append(
                 "Sens de « région » non précisé pour un KPI sans défaut : utilise ask_clarification "
                 "(missing = sens_region, options region_agent / region_client)."
@@ -726,6 +819,35 @@ class _Run:
         if errs:
             return None, errs
         return self._finalize(text, result_ids, model_caveats, inp.get("follow_up") or [], primary, state), []
+
+    def _allowed_counts_and_numbers(self) -> tuple[set[int], set[int]]:
+        """Comptages (lignes, catégories, régions du référentiel, jours de la période) et numéros de
+        semaine ou de mois (données et périodes) que le texte peut citer en clair."""
+        counts: set[int] = set()
+        regions = self.a.semantic.kpis.get("regions") or []
+        if regions:
+            counts.add(len(regions))
+        numbers: set[int] = set()
+        for e in self.registry.data_entries():
+            res = e.result
+            counts.update({len(res.rows), res.row_count})
+            for j, col in enumerate(res.columns):
+                vals = [r[j] for r in res.rows if j < len(r)]
+                if col.role == "dimension":
+                    counts.add(len({str(v) for v in vals}))
+                if col.role == "time" or col.name in ("semaine", "week", "mois", "month"):
+                    for v in vals:
+                        numbers.update(_period_numbers(v, col.name))
+            for p in (e.period, e.compare_period):
+                if p is None:
+                    continue
+                n_days = (p.end - p.start).days + 1
+                counts.add(n_days)
+                for i in range(min(n_days, 400)):
+                    d = p.start + timedelta(days=i)
+                    numbers.update({d.isocalendar()[1], d.month})
+        counts.discard(0)
+        return counts, numbers
 
     def _finalize(
         self,
@@ -746,16 +868,10 @@ class _Run:
             caveats.append("resultat_tronque")
         if any(not e.result.certified for e in used):
             caveats.append("calcul_ad_hoc")
-        if state.period is not None and state.period.source == "defaut":
-            caveats.append("defaut_periode_applique")
-            notes.append(f"Période par défaut : {state.period.value.get('label')}.")
-        if state.region_kind is not None and state.region_kind.source == "defaut":
-            caveats.append("defaut_region_applique")
-            rk = {"region_agent": "région du point de service", "region_client": "région du client"}[
-                state.region_kind.value
-            ]
-            notes.append(f"Sens de la région : {rk} (défaut).")
-        rendered = self.registry.deopaque(render_text(text, self.registry))
+        d_caveats, d_notes = default_notes(state)
+        caveats += d_caveats
+        notes += d_notes
+        rendered = render_text(self.registry.deopaque(text), self.registry)
         if notes:
             rendered += "\n" + " ".join(notes)
         follow = []
@@ -764,7 +880,7 @@ class _Run:
             if (
                 f
                 and len(f) <= 150
-                and not any(lit.kind in ("nombre", "multiplicatif") for lit in extract_numeric_literals_fr(f))
+                and not any(lit.kind in NUMBER_KINDS for lit in extract_numeric_literals_fr(f))
             ):
                 follow.append(f)
         msg = AssistantMessage(
@@ -784,7 +900,9 @@ class _Run:
             msg.period = primary.period
             msg.table = table_from_entry(primary)
             msg.truncated = res.truncated
-            msg.chart = choose_chart(res.columns, res.rows, additive=additive, truncated=res.truncated)
+            msg.chart = choose_chart(
+                res.columns, res.rows, additive=additive, truncated=res.truncated, ranking=is_ranking(res)
+            )
             msg.evidence = evidence_chain(primary, self.a.semantic)
         data = self.registry.data_entries()
         msg.tables = sorted({t for e in data for t in e.result.tables})
@@ -802,9 +920,11 @@ class _Run:
         return st or (self.base_state or ResolvedState()).model_copy(update={"pending_clarification": None})
 
     def _template_or(self, text: str, *, reason: str) -> AssistantMessage:
-        msg = template_answer(
-            self.registry, self._final_state(), self.a.semantic, trace_id=self.trace_id, reason=reason
-        )
+        state = self._final_state()
+        if self._needs_region_clarification(state):
+            # pas de gabarit sur un sens de « région » choisi sans fondement : on le demande
+            return self._region_clarification()
+        msg = template_answer(self.registry, state, self.a.semantic, trace_id=self.trace_id, reason=reason)
         if msg is not None:
             msg.facts = self.registry.public_facts()
             return msg
@@ -821,6 +941,22 @@ class _Run:
 
     def _error(self, text: str) -> AssistantMessage:
         return self._message("error", text)
+
+
+def _period_numbers(v: Any, col_name: str) -> set[int]:
+    """Numéros de semaine / mois d'une valeur de colonne temporelle (entier, date ou texte ISO)."""
+    if isinstance(v, bool) or v is None:
+        return set()
+    if isinstance(v, int):
+        return {v} if 1 <= v <= 53 else set()
+    try:
+        d = date.fromisoformat(str(v)[:10])
+    except ValueError:
+        m = re.search(r"(?:W|S|-)(\d{1,2})$", str(v))
+        return {int(m.group(1))} if m else set()
+    if col_name in ("mois", "month"):
+        return {d.month}
+    return {d.isocalendar()[1], d.month}
 
 
 def _field_key(k: str) -> str:

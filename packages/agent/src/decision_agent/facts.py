@@ -33,6 +33,7 @@ class FactRecord:
     signed: bool = False
     is_row_sum: bool = False
     column: str | None = None  # colonne mesure d'origine
+    dims: tuple[Any, ...] | None = None  # valeurs des dimensions de la ligne (dérivés de comparaison)
 
 
 @dataclass
@@ -72,7 +73,27 @@ def _num(v: Any) -> float | int | None:
 
 
 def is_free_text_column(col: ColumnInfo) -> bool:
-    return col.role != "measure" and bool(FREE_TEXT_RE.search(col.name))
+    """Texte libre à opacifier : drapeau `free_text` calculé par le serveur MCP depuis l'AST (alias et
+    fonctions compris), ou, en défense en profondeur, l'ancienne heuristique sur le nom de colonne."""
+    return col.free_text or (col.role != "measure" and bool(FREE_TEXT_RE.search(col.name)))
+
+
+_LIMIT_RE = re.compile(r"\blimit\s+(\d+)\s*(?:offset\s+\d+\s*)?;?\s*$", re.IGNORECASE)
+
+
+def is_ranking(result: ToolResult) -> bool:
+    """Classement « top N » : `limit` compilé (query_metric) ou LIMIT du SQL qui a borné le résultat.
+
+    Sur un tel résultat, la somme des lignes n'est pas un total et les parts sont trompeuses.
+    """
+    params = result.params or {}
+    if params.get("limit") is not None:
+        return True
+    if result.tool == "run_query" and result.sql:
+        m = _LIMIT_RE.search(result.sql.strip())
+        if m and len(result.rows) >= int(m.group(1)):
+            return True
+    return False
 
 
 class FactRegistry:
@@ -122,8 +143,21 @@ class FactRegistry:
         return label in self._labels
 
     def deopaque(self, text: str) -> str:
-        """Remplace les étiquettes opaques (A12) par les valeurs réelles, pour l'affichage."""
-        return re.sub(r"\bA[0-9]+\b", lambda m: self._labels.get(m.group(0), m.group(0)), text)
+        """Remplace les étiquettes opaques (A12) réellement attribuées par les valeurs réelles.
+
+        À appliquer AVANT le rendu des gabarits : les gabarits sont laissés intacts, et une valeur réelle
+        déjà rendue (ex. « Boutique A2 ») n'est jamais retraitée. Un motif `A…` non attribué reste tel quel.
+        """
+        if not self._labels:
+            return text
+        alts = "|".join(sorted((re.escape(k) for k in self._labels), key=len, reverse=True))
+        pat = re.compile(r"\{\{[^{}]*\}\}|\b(?:" + alts + r")\b")
+
+        def repl(m: re.Match[str]) -> str:
+            tok = m.group(0)
+            return tok if tok.startswith("{{") else self._labels[tok]
+
+        return pat.sub(repl, text)
 
     def public_facts(self, only_rendered: bool = True) -> list[Fact]:
         out = []
@@ -154,6 +188,7 @@ class FactRegistry:
         signed: bool = False,
         is_row_sum: bool = False,
         column: str | None = None,
+        dims: tuple[Any, ...] | None = None,
     ) -> str:
         if prefix == "f":
             self._n_f += 1
@@ -175,6 +210,7 @@ class FactRegistry:
             signed=signed,
             is_row_sum=is_row_sum,
             column=column,
+            dims=dims,
         )
         return fid
 
@@ -322,6 +358,7 @@ class FactRegistry:
                             "ecart_pp",
                             signed=True,
                             column=cols[j].name,
+                            dims=key,
                         )
                     )
                     continue
@@ -335,6 +372,7 @@ class FactRegistry:
                         "ecart",
                         signed=True,
                         column=cols[j].name,
+                        dims=key,
                     )
                 )
                 if p != 0:
@@ -348,6 +386,7 @@ class FactRegistry:
                             "variation",
                             signed=True,
                             column=cols[j].name,
+                            dims=key,
                         )
                     )
 
@@ -355,6 +394,8 @@ class FactRegistry:
         res = entry.result
         cols = res.columns
         if res.truncated or len(dim_js) != 1 or not (2 <= len(res.rows) <= 20):
+            return
+        if is_ranking(res):  # top N : ni « total (somme des lignes) » ni parts
             return
         for j in measure_js:
             col = cols[j]

@@ -56,10 +56,30 @@ VARIATION_WORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Nombre isolé : ni précédé d'un chiffre (groupe de milliers « 1 200 »), ni d'une lettre, virgule ou point.
+_ISOLATED = r"(?<!\d )(?<!\d\.)(?<![\w,.{])"
+_COUNT_NOUNS = (
+    r"r[ée]gions?|cat[ée]gories|types|segments|lignes|villes|agents|clients|points de service|"
+    r"semaines|mois|jours|trimestres"
+)
+
 _PRE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("date", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),
     ("date", re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")),
     ("date", re.compile(rf"\b(?:1er|\d{{1,2}})\s+(?:{MONTHS})\b", re.IGNORECASE)),
+    # « 2 régions sur 3 », « 3 sur 14 » : fraction de lignes du résultat (value = N, extra = M)
+    (
+        "fraction",
+        re.compile(
+            _ISOLATED + r"(\d{1,3})\s+(?:[a-zàâçéèêëîïôûù'-]+\s+){0,3}sur\s+(?:les\s+)?(\d{1,3})(?![\d,.%])",
+            re.IGNORECASE,
+        ),
+    ),
+    # « semaine 38 », « mois 9 » : numéro de semaine ou de mois (value = N)
+    (
+        "numero",
+        re.compile(r"\b(?:semaines?|sem\.|mois)\s+(?:n°\s*)?(\d{1,2})(?![\d,.%])", re.IGNORECASE),
+    ),
     (
         "periode",
         re.compile(
@@ -80,6 +100,9 @@ _PRE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "multiplicatif",
         re.compile(r"\b(?:deux|trois|quatre|cinq|six|dix|\d+(?:,\d+)?)\s+fois\b", re.IGNORECASE),
     ),
+    # « les 14 régions », « 3 segments » : comptage de catégories (toléré s'il correspond au résultat ou
+    # au référentiel ; sinon traité comme un nombre ordinaire)
+    ("compte", re.compile(_ISOLATED + rf"(\d{{1,3}})\s+(?:{_COUNT_NOUNS})\b", re.IGNORECASE)),
     (
         "multiplicatif",
         re.compile(
@@ -116,15 +139,76 @@ _SCALES = {
 }
 
 
+# Nombres écrits en lettres (formes courantes) : une suite de mots-nombres contenant une échelle
+# (cent, mille, million, milliard) ou suivie de « pour cent ».
+_FR_SMALL = {
+    "un": 1,
+    "une": 1,
+    "deux": 2,
+    "trois": 3,
+    "quatre": 4,
+    "cinq": 5,
+    "six": 6,
+    "sept": 7,
+    "huit": 8,
+    "neuf": 9,
+    "dix": 10,
+    "onze": 11,
+    "douze": 12,
+    "treize": 13,
+    "quatorze": 14,
+    "quinze": 15,
+    "seize": 16,
+    "vingt": 20,
+    "vingts": 20,
+    "trente": 30,
+    "quarante": 40,
+    "cinquante": 50,
+    "soixante": 60,
+}
+_FR_SCALES = ("cent", "cents", "mille", "million", "millions", "milliard", "milliards")
+_FR_WORD = "|".join(sorted([*_FR_SMALL, *_FR_SCALES], key=len, reverse=True))
+_WORDS_RE = re.compile(
+    rf"\b(?:{_FR_WORD})(?:(?:\s+et\s+|\s+|-)(?:{_FR_WORD}))*\b(\s+pour\s*cent\b)?", re.IGNORECASE
+)
+
+
+def _parse_fr_words(words: list[str]) -> float:
+    total, cur = 0.0, 0.0
+    for w in words:
+        if w in ("cent", "cents"):
+            cur = (cur or 1) * 100
+        elif w == "mille":
+            total += (cur or 1) * 1_000
+            cur = 0
+        elif w.startswith("milliard"):
+            total += (cur or 1) * 1e9
+            cur = 0
+        elif w.startswith("million"):
+            total += (cur or 1) * 1e6
+            cur = 0
+        elif w in ("vingt", "vingts") and cur % 100 == 4:  # quatre-vingt(s)
+            cur += 76
+        else:
+            cur += _FR_SMALL.get(w, 0)
+    return total + cur
+
+
+# Littéraux qui écrivent un nombre (à refuser dans un motif de refus, une hypothèse ou une relance).
+NUMBER_KINDS = ("nombre", "multiplicatif", "lettres", "compte", "fraction")
+
+
 @dataclass(frozen=True)
 class NumLiteral:
     raw: str
     start: int
-    kind: str  # nombre | annee | date | rang | periode | multiplicatif
+    # nombre | annee | date | rang | periode | multiplicatif | compte | fraction | numero | lettres
+    kind: str
     value: float | None = None
     precision: float = 1.0
     unit: str | None = None  # pct | pp | xof | None
     signed: bool = False
+    extra: float | None = None  # dénominateur d'une fraction (« 2 sur 3 »)
 
 
 def normalize_text(text: str) -> str:
@@ -151,7 +235,12 @@ def extract_numeric_literals_fr(text: str) -> list[NumLiteral]:
 
     for kind, pat in _PRE_PATTERNS:
         for m in pat.finditer("".join(masked)):
-            found.append(NumLiteral(raw=m.group(0), start=m.start(), kind=kind))
+            value = extra = None
+            if kind in ("fraction", "numero", "compte"):
+                value = float(m.group(1))
+                extra = float(m.group(2)) if kind == "fraction" else None
+            raw, start = (m.group(1), m.start(1)) if kind == "compte" else (m.group(0), m.start())
+            found.append(NumLiteral(raw=raw, start=start, kind=kind, value=value, extra=extra))
             mask(m.start(), m.end())
     cur = "".join(masked)
     for m in _YEAR_RE.finditer(cur):
@@ -184,6 +273,29 @@ def extract_numeric_literals_fr(text: str) -> list[NumLiteral]:
                 precision=(10**-decimals) * scale,
                 unit=unit,
                 signed=signed,
+            )
+        )
+        mask(m.start(), m.end())
+    cur = "".join(masked)
+    for m in _WORDS_RE.finditer(cur):
+        words = [w.lower() for w in re.split(r"\s+et\s+|\s+|-", m.group(0).strip()) if w]
+        pour_cent = bool(m.group(1))
+        if pour_cent:
+            words = words[:-2] if words[-2:] == ["pour", "cent"] else [w for w in words if w != "pour"]
+        if not words:
+            continue
+        if not pour_cent and not any(w in _FR_SCALES for w in words):
+            continue  # « deux régions », « un incident » : pas un montant
+        before = cur[max(0, m.start() - 5) : m.start()].lower()
+        if not pour_cent and words in (["cent"], ["cents"]) and before.endswith("pour "):
+            continue  # « pour cent » après un nombre en chiffres
+        found.append(
+            NumLiteral(
+                raw=m.group(0).strip(),
+                start=m.start(),
+                kind="lettres",
+                value=_parse_fr_words(words),
+                unit="pct" if pour_cent else None,
             )
         )
     return sorted(found, key=lambda x: x.start)
@@ -260,8 +372,14 @@ def validate_text(
     allow_hypothesis: bool = True,
     restrict_to: set[str] | None = None,
     accept_matched_literals: bool = False,
+    allowed_counts: Iterable[int] = (),
+    allowed_numbers: Iterable[int] = (),
 ) -> list[str]:
     """Contrôles communs au chat et à l'analyse : références, littéraux, causalité.
+
+    `allowed_counts` : comptages tolérés en clair (lignes et catégories des résultats, nombre de régions du
+    référentiel) pour « les 14 régions » ou « 2 régions sur 3 ». `allowed_numbers` : numéros de semaine ou
+    de mois présents dans les données ou la période (« semaine 38 »).
 
     `accept_matched_literals` (ablation e) : un nombre écrit en clair qui correspond à un fait est accepté ;
     il est ensuite remplacé par sa référence (`literals_to_refs`).
@@ -269,6 +387,8 @@ def validate_text(
     errs: list[str] = []
     years = set(allowed_years)
     smalls = set(allowed_small_ints)
+    counts = set(allowed_counts) | smalls
+    numbers = set(allowed_numbers)
     # 1. Références
     for m in TEMPLATE_RE.finditer(text):
         if m.group(1) == "l":
@@ -291,6 +411,28 @@ def validate_text(
     norm = normalize_text(stripped)
     for lit in extract_numeric_literals_fr(stripped):
         if lit.kind in ("date", "rang", "periode"):
+            continue
+        if lit.kind == "numero":
+            if lit.value is not None and int(lit.value) in numbers:
+                continue
+            errs.append(f"« {lit.raw} » : numéro absent des données et de la période interrogée")
+            continue
+        if lit.kind == "fraction":
+            n, d = lit.value, lit.extra
+            if n is not None and d is not None and int(d) in counts and 0 <= n <= d:
+                continue
+            errs.append(f"nombre non sourcé : « {lit.raw} »")
+            continue
+        if lit.kind == "compte":
+            if lit.value is not None and int(lit.value) in counts:
+                continue
+            lit = NumLiteral(raw=lit.raw, start=lit.start, kind="nombre", value=lit.value)
+        if lit.kind == "lettres":
+            ids = match_fact(lit, registry)
+            if ids and accept_matched_literals:
+                continue
+            hint = f" : écris {{{{{ids[0]}}}}}" if ids else " : cite le fait par référence {{f…}}"
+            errs.append(f"nombre écrit en lettres « {lit.raw} »{hint}")
             continue
         if lit.kind == "annee":
             if lit.value is not None and int(lit.value) in years:
@@ -330,6 +472,9 @@ def validate_answer(
     allowed_years: Iterable[int] = (),
     allowed_small_ints: Iterable[int] = (),
     accept_matched_literals: bool = False,
+    allowed_counts: Iterable[int] = (),
+    allowed_numbers: Iterable[int] = (),
+    role: str | None = None,
 ) -> list[str]:
     """Validation de `submit_answer` ; renvoie la liste des erreurs (vide si valide)."""
     errs = validate_text(
@@ -338,7 +483,11 @@ def validate_answer(
         allowed_years=allowed_years,
         allowed_small_ints=allowed_small_ints,
         accept_matched_literals=accept_matched_literals,
+        allowed_counts=allowed_counts,
+        allowed_numbers=allowed_numbers,
     )
+    if role == "decideur":
+        errs.extend(sql_leak_violations(text))
     for rid in result_ids:
         if registry.entry(rid) is None:
             errs.append(f"résultat inconnu {rid}")
@@ -362,6 +511,26 @@ def validate_answer(
             "résultat vide non signalé : ajoute le caveat resultat_vide "
             "et dis qu'aucune donnée ne correspond."
         )
+    return errs
+
+
+_SQL_RE = re.compile(
+    r"\bselect\b[\s\S]{0,300}?\bfrom\b"
+    r"|\bjoin\s+[\w.]+\s+(?:\w+\s+)?(?:on|using)\b"
+    r"|\bwhere\s+[\w.]+\s*(?:=|<>|!=|<=|>=|<|>|\bin\b|\blike\b|\bis\b|\bbetween\b)"
+    r"|\b(?:group|order)\s+by\b",
+    re.IGNORECASE,
+)
+_TABLE_RE = re.compile(r"\banalytics\.\w+|\bfact_transaction\b|\bdim_[a-z_]+\b", re.IGNORECASE)
+
+
+def sql_leak_violations(text: str) -> list[str]:
+    """Rôle décideur (F2) : ni SQL ni nom de table dans le texte de la réponse."""
+    errs = []
+    if _SQL_RE.search(text):
+        errs.append("le texte contient du SQL : le décideur ne voit jamais le SQL, reformule en français.")
+    if _TABLE_RE.search(text):
+        errs.append("le texte contient un nom de table : décris la donnée en français, sans nom technique.")
     return errs
 
 

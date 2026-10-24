@@ -225,6 +225,41 @@ REFUSE = {
     ),
 }
 
+# --- Descriptions des bras d'ablation (prompts.claude_tools) -----------------------------------
+
+# a : modèle seul + schéma brut : aucun élément de glossaire (KPI, statut par défaut, sens de la région).
+ABLATION_A_DESCRIPTIONS: dict[str, str] = {
+    "run_query": (
+        "SELECT PostgreSQL en lecture seule sur analytics.*. Agréger en SQL. Le résultat est étiqueté "
+        "« calcul ad hoc ». declared_scope décrit la requête (statut filtré ou non, colonne de région "
+        "utilisée) et est vérifié contre l'AST."
+    ),
+    "ask_clarification": (
+        "Demande une précision (une seule par question) quand la question est ambiguë. 2 ou 3 options."
+    ),
+}
+
+# c : sans query_metric (la couche sémantique reste fournie).
+ABLATION_C_DESCRIPTIONS: dict[str, str] = {
+    "run_query": (
+        "SELECT PostgreSQL en lecture seule sur analytics.*, en suivant les définitions de KPI fournies. "
+        "Agréger en SQL (ne jamais rapatrier des lignes pour les additionner). Le résultat est étiqueté "
+        "« calcul ad hoc ». declared_scope est vérifié contre l'AST : statut 'reussie' pour les montants et "
+        "volumes sauf demande explicite, region_kind = la colonne de région jointe."
+    ),
+}
+
+# e : sans citation par référence : le modèle écrit les nombres, le validateur les apparie aux faits.
+ABLATION_E_DESCRIPTIONS: dict[str, str] = {
+    "submit_answer": (
+        "Réponse finale. Écris les nombres en chiffres, exactement tels qu'ils figurent dans les faits "
+        "fournis (valeurs et dérivés), avec leur unité ; n'utilise pas de références {{f…}}/{{d…}} ; "
+        "noms masqués par {{l:A12}}. Le code rappelle la période, le périmètre, le tableau et le "
+        "graphique. Toute cause est une hypothèse et doit être écrite dans une phrase commençant par "
+        "« Hypothèse : »."
+    ),
+}
+
 CLAUDE_TOOLS: list[dict[str, Any]] = [
     QUERY_METRIC,
     RUN_QUERY,

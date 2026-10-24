@@ -22,6 +22,8 @@ from decision_core.models import (
     TableData,
 )
 
+from decision_agent.facts import is_ranking
+
 if TYPE_CHECKING:
     from decision_agent.facts import FactRegistry, ResultEntry
 
@@ -30,6 +32,8 @@ MINUS = "−"
 
 TEMPLATE_RE = re.compile(r"\{\{\s*(?:(l):([A-Za-z]+[0-9]+)|([fd][0-9]+)(?::([a-z]+))?)\s*\}\}")
 ALLOWED_FMT = {"abs", "brut"}
+
+ADHOC_LABEL = "Calcul ad hoc"  # libellé neutre des résultats run_query (jamais le `purpose` du modèle)
 
 TIME_COLUMNS = {"jour", "semaine", "mois", "trimestre", "date", "day", "week", "month", "quarter", "annee"}
 
@@ -148,9 +152,17 @@ def _is_time_column(col: ColumnInfo) -> bool:
 
 
 def choose_chart(
-    columns: list[ColumnInfo], rows: list[list[Any]], *, additive: bool = False, truncated: bool = False
+    columns: list[ColumnInfo],
+    rows: list[list[Any]],
+    *,
+    additive: bool = False,
+    truncated: bool = False,
+    ranking: bool = False,
 ) -> Chart:
-    """Graphique choisi par la forme du résultat (AGENTIC §7, revue §1.9), jamais par le modèle."""
+    """Graphique choisi par la forme du résultat (AGENTIC §7, revue §1.9), jamais par le modèle.
+
+    Un classement « top N » (`ranking`) n'est jamais un donut : ses lignes ne forment pas un tout.
+    """
     measures = [c for c in columns if c.role == "measure"]
     dims = [c for c in columns if c.role == "dimension"]
     times = [c for c in columns if _is_time_column(c) and c.role != "measure"]
@@ -173,7 +185,14 @@ def choose_chart(
     if len(dims) == 1 and len(measures) == 1:
         values = [r[columns.index(measures[0])] for r in rows]
         non_negative = all(isinstance(v, int | float) and v >= 0 for v in values)
-        if additive and not truncated and n <= 6 and non_negative and measures[0].unit in ("count", "xof"):
+        if (
+            additive
+            and not truncated
+            and not ranking
+            and n <= 6
+            and non_negative
+            and measures[0].unit in ("count", "xof")
+        ):
             return Chart(type="donut", x=dims[0].name, y=[measures[0].name])
         if n <= 12:
             return Chart(type="bar", x=dims[0].name, y=[measures[0].name])
@@ -245,14 +264,26 @@ def evidence_chain(entry: ResultEntry, semantic: Any) -> list[EvidenceStep]:
             labels = [semantic.dimensions.get(g, {}).get("label", g) for g in gb]
             steps.append(EvidenceStep(kind="operation", label="Découpage par " + ", ".join(labels)))
     elif res.tool == "run_query":
-        purpose = (entry.purpose or "").strip()
-        steps.append(
-            EvidenceStep(
-                kind="operation",
-                label="Calcul ad hoc (SQL généré, non certifié)" + (f" : {purpose}" if purpose else ""),
-            )
-        )
+        # Libellé fixe : le `purpose` est écrit par le modèle, il n'est jamais montré au décideur.
+        steps.append(EvidenceStep(kind="operation", label=ADHOC_LABEL + " (SQL généré, non certifié)"))
     return steps
+
+
+def default_notes(state: ResolvedState) -> tuple[list[str], list[str]]:
+    """(caveats, notes) des défauts appliqués par le code (période, sens de la région)."""
+    caveats: list[str] = []
+    notes: list[str] = []
+    if state.period is not None and state.period.source == "defaut":
+        caveats.append("defaut_periode_applique")
+        label = state.period.value.get("label") if isinstance(state.period.value, dict) else None
+        if label:
+            notes.append(f"Période par défaut : {label}.")
+    if state.region_kind is not None and state.region_kind.source == "defaut":
+        caveats.append("defaut_region_applique")
+        rk = REGION_KIND_FR.get(state.region_kind.value)
+        if rk:
+            notes.append(f"Sens de la région : {rk} (défaut).")
+    return caveats, notes
 
 
 def table_from_entry(entry: ResultEntry) -> TableData:
@@ -283,7 +314,7 @@ def template_answer(
     metrics = (res.params or {}).get("metrics") or []
     kpi_label = ", ".join(semantic.metrics.get(m, {}).get("label", m) for m in metrics) or "Résultat"
     if res.tool == "run_query":
-        kpi_label = (entry.purpose or "Calcul ad hoc").strip().rstrip(".")
+        kpi_label = ADHOC_LABEL  # jamais le `purpose` écrit par le modèle
     period = entry.period.label if entry.period else "période non précisée"
     scope = scope_label(state)
     caveats = ["reponse_simplifiee"]
@@ -304,15 +335,22 @@ def template_answer(
         caveats.append("resultat_tronque")
     if not res.certified:
         caveats.append("calcul_ad_hoc")
+    d_caveats, notes = default_notes(state)
+    caveats += d_caveats
+    text += " (Réponse simplifiée.)"
+    if notes:
+        text += "\n" + " ".join(notes)
     additive = all(semantic.metrics.get(m, {}).get("additive") for m in metrics) if metrics else False
     return AssistantMessage(
         kind="answer",
-        text=text + " (Réponse simplifiée.)",
+        text=text,
         period=entry.period,
         scope=scope,
         table=table_from_entry(entry),
         truncated=res.truncated,
-        chart=choose_chart(res.columns, res.rows, additive=additive, truncated=res.truncated),
+        chart=choose_chart(
+            res.columns, res.rows, additive=additive, truncated=res.truncated, ranking=is_ranking(res)
+        ),
         tables=list(res.tables),
         sql=[res.sql] if res.sql else None,
         evidence=evidence_chain(entry, semantic),

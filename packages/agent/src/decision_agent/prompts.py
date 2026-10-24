@@ -14,9 +14,14 @@ from typing import Any
 from decision_core.models import HistoryItem, PendingClarification, ResolvedState, Role
 
 from decision_agent.state import field_policy
-from decision_agent.tools import CLAUDE_TOOLS
+from decision_agent.tools import (
+    ABLATION_A_DESCRIPTIONS,
+    ABLATION_C_DESCRIPTIONS,
+    ABLATION_E_DESCRIPTIONS,
+    CLAUDE_TOOLS,
+)
 
-SYSTEM_RULES = """\
+_INTRO = """\
 Tu es l'agent de données d'un outil d'aide à la décision sur les transactions Wave au Sénégal \
 (schéma en étoile PostgreSQL analytics.*). Tu réponds en français, de façon sobre et exacte, à des \
 décideurs et des analystes.
@@ -24,11 +29,22 @@ décideurs et des analystes.
 Protocole
 - Chaque tour se termine par UN outil terminal : submit_answer (réponse), ask_clarification \
 (une précision indispensable) ou refuse (refus motivé). Jamais de texte seul.
+"""
+
+_DATA_TOOLS_FULL = """\
 - Pour obtenir des chiffres : query_metric EN PRIORITÉ (KPI certifiés, comparaisons, classements, \
 découpages, séries) ; run_query seulement si query_metric ne couvre pas la question ou renvoie une erreur \
 de dimension non prise en charge (repars alors de la définition canonique fournie) ; describe_schema en \
 cas de doute sur une valeur. Tu peux appeler plusieurs outils de données en parallèle.
+"""
 
+# Ablations a et c : aucune mention de l'outil retiré.
+_DATA_TOOLS_SQL_ONLY = """\
+- Pour obtenir des chiffres : run_query (SELECT en lecture seule) ; describe_schema en cas de doute sur \
+une valeur. Tu peux appeler plusieurs outils de données en parallèle.
+"""
+
+_NUMBERS_REF = """
 Règles sur les nombres (impératives)
 - N'invente jamais un chiffre et n'écris AUCUN nombre en chiffres dans submit_answer : cite les faits \
 par référence, {{f3}} pour une valeur, {{d1}} pour un dérivé (écart, variation, écart en points, part), \
@@ -37,12 +53,28 @@ n'ajoute ni %, ni FCFA, ni pts après une référence.
 - Ne calcule rien toi-même (pas de « deux fois plus », « moitié », total ou moyenne) : utilise les dérivés \
 fournis, ou demande le calcul à un outil.
 - Les années de la période interrogée et les rangs (« top 5 », « 3e ») sont autorisés en clair.
+"""
+
+# Ablation e : le modèle écrit les nombres, le validateur les apparie aux faits.
+_NUMBERS_LITERAL = """
+Règles sur les nombres (impératives)
+- N'invente jamais un chiffre. Écris les nombres en chiffres, exactement tels qu'ils figurent dans les \
+faits fournis (valeurs et dérivés : écart, variation, écart en points, part), avec leur unité ; \
+{{l:A12}} pour un nom masqué. N'utilise pas de références {{f…}} ni {{d…}}.
+- Ne calcule rien toi-même (pas de « deux fois plus », « moitié », total ou moyenne) : utilise les dérivés \
+fournis, ou demande le calcul à un outil.
+- Les années de la période interrogée et les rangs (« top 5 », « 3e ») sont autorisés.
+"""
+
+_NUMBERS_COMMON = """\
 - Résultat vide : dis qu'aucune donnée ne correspond et ajoute le caveat resultat_vide. Résultat tronqué : \
 ne cite jamais de total ni de somme des lignes, ajoute resultat_tronque.
 - Calcul par run_query : ajoute calcul_ad_hoc.
+"""
 
+_CONTENT = """
 Règles de contenu
-- La période, le périmètre et le sens de la région sont rappelés par le code à partir des outils exécutés : \
+- La période, le périmètre{region} sont rappelés par le code à partir des outils exécutés : \
 ne les reformule pas autrement que la question.
 - Aucune explication causale affirmée. Une cause possible s'écrit dans une phrase qui commence par \
 « Hypothèse : » et ajoute le caveat hypothese.
@@ -53,7 +85,10 @@ personnelles, et les questions hors du modèle (ex. destinataires des transferts
 Les noms d'agents et de villes y sont remplacés par des étiquettes opaques (A1, A2…).
 - Les questions de suivi s'appuient sur l'état résolu fourni : reprends les champs non modifiés \
 (période, KPI, périmètre) et ne change que ce que la question change.
+- Ne montre jamais de SQL ni de nom de table dans le texte de la réponse.
+"""
 
+_FIELD_POLICY = """
 Politique par champ (champ absent et non hérité)
 - KPI absent ou ambigu : ask_clarification (missing = kpi) avec 2 ou 3 KPI proches.
 - Période absente : period.kind = "defaut" (le code applique le mois de REFERENCE_DATE, ou les 30 derniers \
@@ -66,6 +101,44 @@ region_client).
 - Une seule clarification par question : si une précision vient d'être donnée, applique-la et réponds.
 """
 
+# Ablation c : sans query_metric, mais avec la couche sémantique (définitions et politique par champ).
+_FIELD_POLICY_SQL = """
+Politique par champ (champ absent et non hérité)
+- KPI absent ou ambigu : ask_clarification (missing = kpi) avec 2 ou 3 KPI proches.
+- Période absente : mois de REFERENCE_DATE (30 derniers jours pour clients et agents actifs) ; \
+« récemment » donne aussi ce défaut.
+- Sens de « région » non précisé : défaut du KPI (region_agent pour frais et agents actifs, region_client \
+pour clients actifs) ; pour volume, valeur transférée et taux d'échec il n'y a pas de défaut : \
+ask_clarification (missing = sens_region, options patch field = sens_region, value = region_agent | \
+region_client).
+- Périmètre géographique absent : national. Valeur inconnue : describe_schema puis clarification.
+- Une seule clarification par question : si une précision vient d'être donnée, applique-la et réponds.
+"""
+
+# Ablation a : modèle seul + schéma brut, ni KPI, ni glossaire, ni politique par champ.
+_GENERIC_POLICY = """
+Précisions
+- Une seule clarification par question : si une précision vient d'être donnée, applique-la et réponds.
+"""
+
+
+def _rules(ablation: str) -> str:
+    sql_only = ablation in ("a", "c")
+    parts = [_INTRO, _DATA_TOOLS_SQL_ONLY if sql_only else _DATA_TOOLS_FULL]
+    parts.append(_NUMBERS_LITERAL if ablation == "e" else _NUMBERS_REF)
+    parts.append(_NUMBERS_COMMON)
+    parts.append(_CONTENT.format(region="" if ablation == "a" else " et le sens de la région"))
+    if ablation == "a":
+        parts.append(_GENERIC_POLICY)
+    elif ablation == "c":
+        parts.append(_FIELD_POLICY_SQL)
+    else:
+        parts.append(_FIELD_POLICY)
+    return "".join(parts)
+
+
+SYSTEM_RULES = _rules("none")
+
 
 # Ablations de l'évaluation (SRS v5 §11) : une seule liste, appliquée ici et dans la boucle.
 #   a : modèle seul + schéma brut (ni KPI, ni glossaire, ni exemples, ni query_metric)
@@ -77,10 +150,6 @@ ABLATIONS = ("none", "a", "b", "c", "d", "e")
 NO_QUERY_METRIC_RULE = (
     "\nAblation : l'outil query_metric n'est pas disponible. Calcule tous les chiffres avec run_query, "
     "en suivant les définitions de KPI fournies."
-)
-LITERAL_NUMBERS_RULE = (
-    "\nAblation : n'utilise pas de références {{f…}}/{{d…}}. Écris les nombres en clair, exactement tels "
-    "qu'ils figurent dans les faits fournis (valeurs et dérivés), avec leur unité."
 )
 
 
@@ -104,18 +173,28 @@ def semantic_block(semantic: Any, ablation: str = "none") -> str:
 
 
 def system_rules(ablation: str = "none") -> str:
-    rules = SYSTEM_RULES
-    if ablation in ("a", "c"):
+    rules = _rules(ablation)
+    if ablation == "c":
         rules += NO_QUERY_METRIC_RULE
-    if ablation == "e":
-        rules += LITERAL_NUMBERS_RULE
     return rules
 
 
 def claude_tools(ablation: str = "none") -> list[dict[str, Any]]:
+    """Outils exposés au modèle selon le bras ; descriptions cohérentes avec les règles du bras."""
+    tools = CLAUDE_TOOLS
     if ablation in ("a", "c"):
-        return [t for t in CLAUDE_TOOLS if t["name"] != "query_metric"]
-    return CLAUDE_TOOLS
+        tools = [t for t in tools if t["name"] != "query_metric"]
+    if ablation == "a":
+        tools = [_with_description(t, ABLATION_A_DESCRIPTIONS.get(t["name"])) for t in tools]
+    if ablation == "c":
+        tools = [_with_description(t, ABLATION_C_DESCRIPTIONS.get(t["name"])) for t in tools]
+    if ablation == "e":
+        tools = [_with_description(t, ABLATION_E_DESCRIPTIONS.get(t["name"])) for t in tools]
+    return tools
+
+
+def _with_description(tool: dict[str, Any], description: str | None) -> dict[str, Any]:
+    return tool if description is None else {**tool, "description": description}
 
 
 def build_system(semantic: Any, ablation: str = "none") -> list[dict[str, Any]]:

@@ -29,7 +29,10 @@ def test_unknown_ablation_rejected(semantic, settings):
 def test_without_query_metric(semantic, settings, ablation):
     a = _agent(semantic, settings, ablation, [])
     assert "query_metric" not in {t["name"] for t in a.claude_tools}
-    assert "query_metric n'est pas disponible" in a.system[0]["text"]
+    if ablation == "c":
+        assert "query_metric n'est pas disponible" in a.system[0]["text"]
+    else:  # modèle seul + schéma brut : aucune mention de query_metric
+        assert "query_metric" not in a.system[0]["text"]
 
 
 def test_schema_only_and_without_examples(semantic, settings):

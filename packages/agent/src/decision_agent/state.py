@@ -102,6 +102,25 @@ def levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+_OPTION_NUM_RE = re.compile(
+    r"^\s*(?:(?:option|choix|n°|no|numero|numéro)\s*|(?:le|la|l')\s*)?(\d{1,2})\s*[.)]?\s*$", re.IGNORECASE
+)
+_ORDINAL_WORDS = {k: v for k, v in ORDINALS.items() if k not in ("un", "une", "deux", "trois")}
+_OPTION_ORD_RE = re.compile(
+    r"^(?:la |le |l )?(" + "|".join(sorted(_ORDINAL_WORDS, key=len, reverse=True)) + r")(?: option| choix)?$"
+)
+
+
+def _option_number(reply: str, normalized: str) -> int | None:
+    m = _OPTION_NUM_RE.match(reply)
+    if m:
+        return int(m.group(1))
+    m = _OPTION_ORD_RE.match(normalized)
+    if m:
+        return _ORDINAL_WORDS[m.group(1)]
+    return None
+
+
 def resolve_clarification_reply(
     reply: str, pending: PendingClarification, *, synonyms: dict[str, str] | None = None
 ) -> dict[str, Any] | None:
@@ -111,15 +130,14 @@ def resolve_clarification_reply(
     if not text:
         return None
     words = text.split()
-    # 1. numéro d'option (« 2 », « option 2 », « la deuxième »)
-    if len(words) <= 3:
-        for w in words:
-            n = int(w) if w.isdigit() else ORDINALS.get(w)
-            if n is not None:
-                if n == -1:
-                    return dict(opts[-1].patch)
-                if 1 <= n <= len(opts):
-                    return dict(opts[n - 1].patch)
+    # 1. numéro d'option : seulement « 2 », « 2. », « option 2 », « le 2 », « la deuxième (option) ».
+    #    « Top 2 régions », « une semaine » ou « frais du 1er » ne sont pas des choix d'option.
+    n = _option_number(reply, text)
+    if n is not None:
+        if n == -1:
+            return dict(opts[-1].patch)
+        if 1 <= n <= len(opts):
+            return dict(opts[n - 1].patch)
     # 2. correspondance floue normalisée avec un libellé
     stripped = re.sub(r"^(la |le |les |l |par |pour |de |du |des |en )+", "", text)
     best: tuple[int, ClarificationOption] | None = None
@@ -200,9 +218,11 @@ def state_from_query_metric(
     question: str,
     metric_defs: dict[str, Any],
     clarified_fields: set[str] | None = None,
+    clarified_values: dict[str, Any] | None = None,
 ) -> ResolvedState:
     prev = prev or ResolvedState()
     clarified = clarified_fields or set()
+    chosen = clarified_values or {}
     metrics = list(params.get("metrics") or [])
     pdict = _period_dict(period)
     st = ResolvedState(certified=True)
@@ -227,7 +247,11 @@ def state_from_query_metric(
             REGION_WORDS_AGENT.search(q) if rk == "region_agent" else REGION_WORDS_CLIENT.search(q)
         )
         defaults = {metric_defs.get(m, {}).get("default_region_kind") for m in metrics}
-        if "region_kind" in clarified or mentioned:
+        chosen_rk = chosen.get("region_kind")
+        if chosen_rk is not None and chosen_rk != rk:
+            # jamais « explicite » pour une valeur qui contredit le choix de l'utilisateur
+            src = "defaut"
+        elif "region_kind" in clarified or mentioned:
             src = "explicite"
         elif prev.region_kind is not None and prev.region_kind.value == rk:
             src = "herite"

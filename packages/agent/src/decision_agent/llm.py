@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -33,6 +34,11 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01},
 }
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Modèle servi absent de la table (repli côté serveur, nouvel identifiant) : compté au tarif le plus cher
+# connu, par prudence, pour que le plafond de coût par question reste effectif.
+PRICING_MAX_MODEL = max(PRICING, key=lambda m: (PRICING[m]["output"], PRICING[m]["input"]))
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,20 @@ def cost_usd(usage: LLMUsage, model: str) -> float | None:
         + usage.output_tokens * p["output"]
     )
     return round(total / 1_000_000, 6)
+
+
+def cost_usd_prudent(usage: LLMUsage, model: str) -> tuple[float, bool]:
+    """(coût, estimé) : un modèle inconnu de `PRICING` est compté au tarif le plus cher connu."""
+    c = cost_usd(usage, model)
+    if c is not None:
+        return c, False
+    logger.warning(
+        "modèle servi %r absent de PRICING (%s) : coût estimé au tarif de %s",
+        model,
+        PRICING_VERSION,
+        PRICING_MAX_MODEL,
+    )
+    return cost_usd(usage, PRICING_MAX_MODEL) or 0.0, True
 
 
 @dataclass(frozen=True)
@@ -202,9 +222,10 @@ class AnthropicClient:
         async with manager as stream:
             async for ev in stream:
                 if ev.type == "content_block_start":
-                    if ttft is None:
-                        ttft = time.monotonic() - t0
                     block = ev.content_block
+                    # TTFT au premier bloc visible (texte ou appel d'outil), pas au bloc de réflexion
+                    if ttft is None and getattr(block, "type", None) in ("text", "tool_use"):
+                        ttft = time.monotonic() - t0
                     if on_event is not None and getattr(block, "type", None) == "tool_use":
                         await on_event("tool_use_start", {"name": block.name})
             msg = await stream.get_final_message()
@@ -230,32 +251,43 @@ class AnthropicClient:
 
         while True:
             timeout = max(1.0, min(self.per_call_timeout_s, remaining()))
+            budget = remaining()
+            if budget <= 0:
+                raise LLMError("timeout", "Échéance de la question atteinte.")
             try:
-                return await self._once(req, timeout, on_event)
-            except a.RateLimitError as e:
-                if _is_spend_limit(e):
-                    raise LLMError(
-                        "spend_limit", "Plafond de dépenses atteint.", request_id=e.request_id
-                    ) from e
-                retry_after = _retry_after(e)
-                if not retried and retry_after is not None and retry_after < remaining() - 5:
-                    retried = True
-                    await asyncio.sleep(retry_after)
-                    continue
-                raise LLMError("rate_limited", "Service saturé.", request_id=e.request_id) from e
-            except a.BadRequestError as e:
-                kind = "spend_limit" if _is_spend_limit(e) else "bad_request"
-                raise LLMError(kind, str(e), request_id=e.request_id) from e
-            except (a.AuthenticationError, a.PermissionDeniedError) as e:
-                raise LLMError("auth", "Clé API refusée.", request_id=e.request_id) from e
+                # Le délai httpx porte sur chaque lecture : un flux lent mais continu le contournerait.
+                # L'échéance globale est donc imposée sur l'appel entier.
+                async with asyncio.timeout(budget):
+                    return await self._once(req, timeout, on_event)
+            except TimeoutError as e:
+                raise LLMError("timeout", "Échéance de la question atteinte pendant l'appel.") from e
             except a.APIStatusError as e:
-                if e.status_code >= 500 and not retried:
+                etype = _error_type(e)
+                if isinstance(e, a.RateLimitError) or etype == "rate_limit_error":
+                    if _is_spend_limit(e):
+                        raise LLMError(
+                            "spend_limit", "Plafond de dépenses atteint.", request_id=e.request_id
+                        ) from e
+                    retry_after = _retry_after(e)
+                    if not retried and retry_after is not None and retry_after < remaining() - 5:
+                        retried = True
+                        await asyncio.sleep(retry_after)
+                        continue
+                    raise LLMError("rate_limited", "Service saturé.", request_id=e.request_id) from e
+                if isinstance(e, a.BadRequestError):
+                    kind = "spend_limit" if _is_spend_limit(e) else "bad_request"
+                    raise LLMError(kind, str(e), request_id=e.request_id) from e
+                if isinstance(e, a.AuthenticationError | a.PermissionDeniedError):
+                    raise LLMError("auth", "Clé API refusée.", request_id=e.request_id) from e
+                # Erreur reçue dans le flux SSE après un HTTP 200 : le type est dans le corps.
+                overloaded = e.status_code >= 500 or etype in ("overloaded_error", "api_error")
+                if overloaded and not retried:
                     jitter = random.uniform(0.5, 1.5)  # noqa: S311 - gigue, pas de cryptographie
                     if remaining() > jitter + 3:
                         retried = True
                         await asyncio.sleep(jitter)
                         continue
-                kind = "overloaded" if e.status_code >= 500 else "bad_request"
+                kind = "overloaded" if overloaded else "bad_request"
                 raise LLMError(kind, str(e), request_id=e.request_id) from e
             except a.APIConnectionError as e:  # inclut APITimeoutError et les erreurs en cours de flux
                 jitter = random.uniform(0.5, 1.5)  # noqa: S311
@@ -265,6 +297,16 @@ class AnthropicClient:
                     continue
                 kind = "timeout" if isinstance(e, a.APITimeoutError) else "connection"
                 raise LLMError(kind, str(e)) from e
+
+
+def _error_type(e: Any) -> str | None:
+    """Type d'erreur Anthropic du corps (`{"type": "error", "error": {"type": ...}}`)."""
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and isinstance(err.get("type"), str):
+            return err["type"]
+    return None
 
 
 def _retry_after(e: Any) -> float | None:

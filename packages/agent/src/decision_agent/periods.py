@@ -107,9 +107,44 @@ def make_period(start: date, end: date) -> Period:
     return Period(start=start, end=end, label=period_label(start, end))
 
 
+def _ytd_label(end: date) -> str:
+    """« 2026, au 30 septembre » : cumul depuis le début de l'année."""
+    return f"{end.year}, au {_day_fr(end)} {MOIS_FR[end.month - 1]}"
+
+
+def _mtd_label(end: date) -> str:
+    """« octobre 2026, au 15 octobre » : cumul depuis le début du mois."""
+    m = MOIS_FR[end.month - 1]
+    return f"{m} {end.year}, au {_day_fr(end)} {m}"
+
+
+def year_to_date(end: date) -> Period:
+    """Année civile bornée à `end` (REFERENCE_DATE) : l'année entière si `end` est le 31 décembre."""
+    start = date(end.year, 1, 1)
+    if end.month == 12 and end.day == 31:
+        return make_period(start, end)
+    return Period(start=start, end=end, label=_ytd_label(end))
+
+
+def month_to_date(end: date) -> Period:
+    """Mois de `end` borné à `end` : le mois entier si `end` est une fin de mois."""
+    start = date(end.year, end.month, 1)
+    if _is_month_end(end):
+        return make_period(start, end)
+    return Period(start=start, end=end, label=_mtd_label(end))
+
+
+def _is_ytd(p: Period) -> bool:
+    return p.start == date(p.end.year, 1, 1) and p.label == _ytd_label(p.end)
+
+
+def _is_mtd(p: Period) -> bool:
+    return p.start == date(p.end.year, p.end.month, 1) and p.label == _mtd_label(p.end)
+
+
 def month_of_reference(ref: date) -> Period:
-    """Défaut annoncé de la politique par champ : le mois de REFERENCE_DATE."""
-    return make_period(*month_bounds(ref.year, ref.month))
+    """Défaut annoncé de la politique par champ : le mois de REFERENCE_DATE, borné à REFERENCE_DATE."""
+    return month_to_date(ref)
 
 
 def last_n_days(ref: date, n: int) -> Period:
@@ -134,7 +169,7 @@ def resolve_relative(name: str, ref: date) -> Period:
         q_end_month = _add_months(q_start, 2)
         return make_period(q_start, month_bounds(q_end_month.year, q_end_month.month)[1])
     if name == "annee_courante":
-        return make_period(date(ref.year, 1, 1), date(ref.year, 12, 31))
+        return year_to_date(ref)
     if name == "7_derniers_jours":
         return last_n_days(ref, 7)
     if name == "30_derniers_jours":
@@ -154,8 +189,25 @@ def default_period_for(metric_names: list[str], semantic_metrics: dict, ref: dat
     return month_of_reference(ref)
 
 
+def _shift_year(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:  # 29 février
+        return d.replace(year=d.year - 1, day=28)
+
+
 def previous_period(p: Period) -> Period:
-    """Période précédente de même longueur ; en mois entiers si la période est en mois entiers."""
+    """Période précédente de même longueur ; en mois entiers si la période est en mois entiers.
+
+    Cumul annuel (« 2026, au 30 septembre ») : même cumul l'année précédente. Cumul mensuel : mêmes jours
+    du mois précédent (bornés à sa fin).
+    """
+    if _is_ytd(p):
+        return previous_year(p)
+    if _is_mtd(p):
+        prev = _add_months(p.start, -1)
+        end = date(prev.year, prev.month, min(p.end.day, _last_day(prev.year, prev.month)))
+        return Period(start=prev, end=end, label=_mtd_label(end))
     if _is_month_start(p.start) and _is_month_end(p.end):
         n = _months_between(p.start, p.end)
         start = _add_months(p.start, -n)
@@ -169,13 +221,11 @@ def previous_period(p: Period) -> Period:
 def previous_year(p: Period) -> Period:
     """Même période un an plus tôt (le 29 février devient le 28)."""
 
-    def shift(d: date) -> date:
-        try:
-            return d.replace(year=d.year - 1)
-        except ValueError:
-            return d.replace(year=d.year - 1, day=28)
-
-    start, end = shift(p.start), shift(p.end)
+    start, end = _shift_year(p.start), _shift_year(p.end)
+    if _is_ytd(p):
+        return Period(start=start, end=end, label=_ytd_label(end))
+    if _is_mtd(p):
+        return Period(start=start, end=end, label=_mtd_label(end))
     if _is_month_end(p.end):
         end = date(end.year, end.month, _last_day(end.year, end.month))
     return make_period(start, end)
