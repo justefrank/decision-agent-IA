@@ -1,0 +1,11 @@
+flowchart LR
+  AUT(["Analyste ou admin<br/>(auteur)"]) --> BR["Branche Git<br/>semantic/*.yaml"]
+  BR --> PR["Pull request"]
+  PR --> CI{"CI : validation des YAML,<br/>tests unitaires des KPI,<br/>anti-fuite exemples / test,<br/>tests de l'agent"}
+  CI -- rouge --> BR
+  CI -- verte --> REV{"Relecteur différent de l'auteur<br/>(branche protégée)"}
+  REV -- "modifications demandées" --> BR
+  REV -- approuvée --> MER["Fusion sur la branche principale"]
+  MER --> DEP["Redéploiement de l'API"]
+  DEP --> SV["Lecture des YAML au démarrage<br/>nouvelle semantic_version"]
+  SV --> BO["B05 Configuration (lecture)<br/>et traces query_log / eval_run"]

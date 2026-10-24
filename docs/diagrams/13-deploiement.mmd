@@ -1,15 +1,21 @@
 flowchart TB
+  user(("Navigateur")) --> proxy
   subgraph H["Hôte : docker compose"]
-    web["web (React, CSP stricte)"]
-    api["api (FastAPI + agent + MCP)"]
-    kc["keycloak (realm versionné)"]
-    pg[("postgres : raw / analytics / app")]
+    proxy["proxy : Caddy 2<br/>TLS, CSP, HSTS<br/>/ SPA statique, /api, /auth"]
+    api["api : FastAPI + agent<br/>(MCP en sous-processus stdio)"]
+    kc["keycloak 26.x<br/>(realm versionné, mode production)"]
+    pg[("postgres 17<br/>warehouse + keycloak")]
+    mail["mailpit (développement)"]
   end
-  user(("Navigateur")) --> web
-  user --> kc
-  web --> api
-  api --> kc
-  api --> pg
-  api --> llm["API LLM externe"]
-  seed["make seed : générateur, chargement, dbt"] --> pg
-  ev["make eval"] --> api
+  proxy --> api
+  proxy --> kc
+  api -- "app_rw ; agent_ro via MCP" --> pg
+  api -- JWKS --> kc
+  kc --> pg
+  kc --> mail
+  api --> llm["API Claude"]
+  seed["make seed : générateur, dbt build, test de droits"] --> pg
+  mig["make migrate : Alembic (app_owner)"] --> pg
+  ev["make eval : Agent.answer direct (app_rw pour eval_run)"] --> pg
+  ev --> llm
+  bench["make bench : banc HTTP"] --> proxy

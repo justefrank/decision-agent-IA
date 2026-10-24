@@ -1,13 +1,21 @@
 flowchart TD
-  Q["Question + état résolu + historique"] --> L1["Tour 1 du modèle : intention"]
-  L1 -- refuse --> R["Refus motivé"]
-  L1 -- clarify --> C["Demande de précision"]
-  L1 -- answer --> L["Boucle d'outils"]
-  L -- get_kpi --> M[("MCP")]
-  L -- "describe_table / run_query" --> M
-  M --> G["Garde SQL + agent_ro"]
-  G --> L
-  L -- "erreur SQL, 2 corrections max" --> L
-  L --> F["Formateur : graphique et dérivés calculés par le code"]
-  F --> V["Validateur de sortie"]
-  V --> A["AssistantMessage + query_log écrit par l'API"]
+  Q["Question"] --> PRE["Code : quota, longueur,<br/>clarification en attente résolue ?"]
+  PRE -- "oui : patch appliqué, question d'origine rejouée" --> CTX
+  PRE -- "non" --> CTX["Contexte : préfixe en cache (outils, système, sémantique)<br/>puis REFERENCE_DATE, rôle, état résolu, 6 échanges"]
+  CTX --> LLM["Appel Claude<br/>(tool_choice auto, outils strict, effort medium)"]
+  LLM -- "query_metric / run_query / describe_schema" --> MCP[("MCP : garde SQL + agent_ro")]
+  MCP -- "ToolResult" --> REG["Registre de faits f… et dérivés d…<br/>vue réduite : 50 lignes, étiquettes opaques"]
+  REG -- "erreur SQL ou avertissement sémantique : 2 corrections max" --> LLM
+  REG --> LLM
+  LLM -- "budget presque atteint" --> NOW["Message système : réponds maintenant"]
+  NOW --> LLM
+  LLM -- "ask_clarification" --> CLR["PendingClarification persistée"]
+  LLM -- "refuse" --> REF["Refus motivé"]
+  LLM -- "submit_answer ({{f}}, {{d}})" --> VAL{"Validateur :<br/>références, littéraux FR,<br/>tronqué / vide, causalité"}
+  VAL -- "échec, 1 nouvel essai" --> LLM
+  VAL -- "ok" --> FMT["Formateur : texte FR, tableau,<br/>graphique, chaîne de preuve, état résolu"]
+  VAL -- "échec persistant" --> TPL["Réponse gabarit (simplified)"]
+  FMT --> OUT["AssistantMessage + QueryLogRecord (API)"]
+  TPL --> OUT
+  CLR --> OUT
+  REF --> OUT

@@ -1,291 +1,356 @@
 # System Design
 
-Version 4 (back-office, authentification, analyse du tableau de bord). Complète [SRS.md](../SRS.md). Pour l'agent, voir [AGENTIC_DESIGN.md](AGENTIC_DESIGN.md).
+Version 5 (MVP, proxy de même origine, MCP v2, flux POST + SSE). Complète [SRS.md](../SRS.md). Pour l'agent, voir [AGENTIC_DESIGN.md](AGENTIC_DESIGN.md). Origine des décisions : [EVALUATION_V5.md](EVALUATION_V5.md) §4 et [revue system design](reviews/2026-10-24-system-design.md).
 
 Principe directeur : **le moins de composants possible, chacun justifié par une exigence.**
 
-## 1. Vue d'ensemble
+Sources de vérité (le texte les résume, il ne les recopie pas) :
+
+| Sujet | Fichier |
+|---|---|
+| Contrats d'échange (outils, messages, journal) | `packages/core/src/decision_core/models.py` |
+| Couche sémantique, KPI, paramètres | `semantic/{tables,kpis,glossary,config}.yaml` (+ `examples.yaml`, paquet agent) |
+| Rôles, bases et schémas Postgres | `infra/postgres/init/` |
+| Variables d'environnement | `packages/core/src/decision_core/settings.py` |
+
+## 1. Décisions v5
+
+| N° | Décision | Remplace |
+|---|---|---|
+| D1 | SPA **Vite + React + TypeScript** (bulletproof-react `react-vite`) ; reprise de `components/ui`, Radix, react-query, MSW, Storybook a11y, DOMPurify. Le dossier `frontend/` (Next.js) sera migré en P2 | Squelette Next.js |
+| D2 | **API FastAPI minimale** : sans utilisateurs locaux, Redis, cache, Taskiq ni SQLAdmin ; quota calculé dans Postgres ; migrations Alembic par `app_owner` | Squelette Fastro (retiré) |
+| D3 | SDK MCP **v2** (`MCPServer`, `mcp>=2.3,<3`) en stdio ; un sous-processus par worker ; seul détenteur du DSN `agent_ro` ; annulation `notifications/cancelled` → `pg_cancel_backend` | S3 précisé |
+| D4 | Flux : **POST + format SSE** (`fastapi.sse`, FastAPI ≥ 0.135) lu par `fetch` ; événements `step`, `final`, `error` ; ping 15 s | S6 précisé |
+| D5 | **Proxy Caddy de même origine** : `/` SPA, `/api` API, `/auth` Keycloak ; plus de CORS ; prérequis du mode production de Keycloak | Compose sans proxy |
+| D6 | **Postgres 17** ; bases `warehouse` et `keycloak` ; rôles `dbt_owner`, `app_owner`, `app_rw`, `agent_ro_base`/`agent_ro`, `keycloak` | `init.sql` v4 |
+| D7 | **Garde SQL renforcé** : liste blanche des types de nœuds, noms de fonctions normalisés, bornes de longueur et de profondeur, `BEGIN READ ONLY`, payloads de différentiel | §6 v4 complété |
+| D8 | Configuration **dans Git, modifiée par PR** ; l'API lit les YAML au démarrage et calcule `semantic_version` ; back-office en lecture | `change_request` + commit par l'API |
+| D9 | Événements d'authentification dans **Keycloak** ; avertissement sur la **session SSO** ; **Audience mapper** | ENF10 précisé |
+
+## 2. Vue d'ensemble et composants
 
 ```mermaid
 flowchart LR
-  subgraph Client
-    UI[Web React + Vite]
-  end
-  KC[Keycloak OIDC]
-  subgraph API["API FastAPI (un processus)"]
-    R[Routes + auth JWT]
-    AG[Agent]
-    MCP[Serveur MCP, sous-processus stdio]
-  end
-  subgraph PG["Postgres 16"]
-    RAW[raw]
-    ANA[analytics]
-    APP[app]
-  end
-  GEN[Générateur Python] --> RAW
-  RAW -- "dbt (dbt_owner)" --> ANA
-  UI -- "Code + PKCE" --> KC
-  UI -- "Bearer JWT, fetch + flux" --> R
-  R -- JWKS --> KC
-  R --> AG
-  AG -- outils --> MCP
-  MCP -- "agent_ro" --> ANA
-  R -- "app_rw" --> APP
-  LLM[API LLM externe] <--> AG
+  SPA["SPA Vite + React<br/>(jeton en mémoire)"] --> PX["Proxy Caddy<br/>(TLS, même origine)"]
+  PX -- "/auth" --> KC["Keycloak 26.x"]
+  PX -- "/api" --> API["API FastAPI"]
+  API --> AG["Agent<br/>(SDK anthropic)"]
+  API --> AN["Analyse du tableau de bord<br/>(workflow)"]
+  AG <--> LLM["API Claude"]
+  AN <--> LLM
+  AG --> MC["Client MCP v2"]
+  AN --> MC
+  MC -- stdio --> MCP["Sous-processus MCPServer<br/>garde SQL, query_metric, run_query, describe_schema<br/>(seul détenteur du DSN agent_ro)"]
+  MCP -- "agent_ro, BEGIN READ ONLY" --> W[("Postgres 17 : warehouse<br/>raw / analytics / app")]
+  API -- "app_rw" --> W
+  API -- JWKS --> KC
+  KC --> K[("base keycloak")]
+  GEN["Générateur Python"] --> W
 ```
 
-Un serveur Postgres, trois schémas, trois rôles. Un monolithe FastAPI héberge l'agent et lance le serveur MCP en **sous-processus stdio** : pas de conteneur MCP, pas de file de messages, pas de cache distribué.
+Un serveur Postgres, deux bases, cinq rôles de connexion. Un monolithe FastAPI héberge l'agent et lance le serveur MCP en **sous-processus stdio** : pas de conteneur MCP, pas de file de messages, pas de cache distribué. Le navigateur ne parle qu'au proxy. Rendu : [DIAGRAMS §1](DIAGRAMS.md#1-architecture-densemble).
 
-## 2. Composants
+### Composants
 
-| Composant | Responsabilité | Technologie | Exigences |
-|---|---|---|---|
-| Générateur | Données synthétiques réalistes, graine fixe, chargement par `COPY` | Python, Faker, NumPy | ENF8 |
-| Transformations | `raw` → étoile, tests de qualité, `grants` | dbt-postgres | ENF8, SRS §7 |
-| Entrepôt | Stockage, rôles, timeouts | Postgres 16 | ENF3 |
-| Serveur MCP | Seule porte d'accès aux données pour l'agent ; garde SQL | Python, SDK MCP, sqlglot, psycopg | ENF3, ENF9 |
-| Agent | Boucle d'outils, sortie structurée | SDK du fournisseur LLM | RF1, RF2, RF14 |
-| API | JWT, conversations, relais vers l'agent, écriture de `query_log`, filtrage par rôle | FastAPI, Pydantic v2, SQLAlchemy | RF5, RF6, RF8, RF13, ENF5 |
-| Interface | Chat, graphiques, historique, KPI, vue SQL (analyste) | React, Vite, TypeScript, Recharts | RF3, RF4, ENF7 |
-| Identité | Utilisateurs, rôles, SSO, MFA, verrouillage ; **pages d'authentification au thème du produit** (connexion, mot de passe oublié, réinitialisation, code à 6 chiffres, première connexion, compte verrouillé) ; API d'administration utilisée par le back-office via un compte de service limité | Keycloak, thème personnalisé | RF11, RF15, RF16, ENF10 |
-| Back-office | 9 vues sous `/admin` : vue d'ensemble, utilisateurs, catalogue de KPI, couche sémantique, journal d'audit, sécurité, évaluation, signalements, paramètres ; rôles vérifiés côté serveur | React (feature `admin`), routes API `/admin/*` | RF9, RF11 à RF13, RF18 à RF20, ENF11 |
-| Analyse du tableau de bord | Constats sourcés, niveaux de confiance, hypothèses étiquetées ; l'agent en mode analyse n'utilise que `get_kpi` | Agent, `GET /kpis/analysis` | RF17 |
+| Composant | Responsabilité | Technologie | Paquet | Exigences |
+|---|---|---|---|---|
+| Générateur | Données synthétiques, graine fixe, chargement par `COPY` dans `raw` | Python, NumPy | `packages/data_gen` (`decision_data_gen`) | ENF8 |
+| Transformations | `raw` → étoile, tests de qualité, tests unitaires des KPI | dbt-core 1.11 + dbt-postgres | `warehouse/` | ENF8 |
+| Entrepôt | Stockage, rôles, timeouts | Postgres 17 | `infra/postgres/` | ENF3 |
+| Contrats | Modèles Pydantic partagés, couche sémantique, paramètres | Pydantic v2 | `packages/core` (`decision_core`) | — |
+| Garde SQL | Bibliothèque pure : AST, liste blanche, réécriture, portée, règles sémantiques | sqlglot | `packages/sql_guard` (`decision_sql_guard`) | ENF3 |
+| Serveur MCP | Seule porte d'accès aux données ; compile `query_metric` ; exécute en lecture seule | SDK `mcp` v2, psycopg | `packages/mcp_server` (`decision_mcp_server`) | ENF3, ENF9 |
+| Agent | Boucle d'outils, registre de faits, validateur, formateur, analyse du tableau de bord | SDK `anthropic>=2.3,<3` | `packages/agent` (`decision_agent`) | RF1-RF3, RF5, RF14, RF17 |
+| API | JWT, conversations, flux SSE, quota, écriture de `query_log`, filtrage par rôle, back-office en lecture | FastAPI ≥ 0.135, SQLAlchemy async, asyncpg, Alembic | `packages/api` (`decision_api`) | RF6, RF8, RF10, RF13, RF19, RF20, ENF5 |
+| Évaluation | Exécuteur, comparateur, statistiques, rapports | Python | `packages/eval` (`decision_eval`) + `eval/` (jeux) | O1, O3 |
+| Interface | Chat, graphiques, historique, tableau de bord, back-office | React, Vite, TypeScript | `frontend/` (à migrer, D1) | RF3, RF4, ENF7, ENF12 |
+| Identité | Utilisateurs, rôles, MFA, force brute ; thème de connexion et d'OTP | Keycloak 26.x, Keycloakify | `infra/keycloak/` | RF11, RF15, RF16, ENF10 |
+| Proxy | TLS, routage de même origine, en-têtes de sécurité | Caddy 2 | `infra/Caddyfile` | ENF4, ENF10 |
 
-Le LLM est derrière une interface mince (`LLMClient`).
+Le LLM est derrière une interface `LLMClient` (implémentations `AnthropicClient`, `ReplayClient`/`ScriptedClient` pour les tests sans clé).
 
 ## 3. Base de données
 
-### Schémas et rôles
+### Bases, schémas et rôles
 
-| Schéma | Contenu | `dbt_owner` | `app_rw` | `agent_ro` |
+Les scripts `infra/postgres/init/` (`00-roles.sh`, `sql/01-roles.sql`, `sql/02-warehouse.sql`) créent **seulement** rôles, bases, schémas et droits par défaut. Ils ne posent aucun droit sur une table : les tables `app` n'existent qu'après les migrations. Le texte ci-dessous résume ces scripts ; en cas d'écart, les scripts font foi.
+
+| Rôle | Connexion | Rôle dans le système |
+|---|---|---|
+| `dbt_owner` | oui | Propriétaire des schémas `raw` et `analytics` ; exécute le chargement et dbt |
+| `app_owner` | oui | Propriétaire du schéma `app` ; exécute les migrations Alembic et la purge de rétention |
+| `app_rw` | oui | Utilisé par l'API et par `make eval` pour écrire les résultats ; DML minimal, posé par migration |
+| `agent_ro_base` | non | Porte le droit `SELECT` sur `analytics` (droits par défaut `FOR ROLE dbt_owner`) |
+| `agent_ro` | oui | Membre de `agent_ro_base` ; `CONNECTION LIMIT 8` ; `default_transaction_read_only`, `statement_timeout = 10s`, `idle_in_transaction_session_timeout = 15s`, `lock_timeout = 2s`, `work_mem = 16MB`, `temp_file_limit = 64MB` ; détenu par le seul sous-processus MCP |
+| `keycloak` | oui | Propriétaire de la base `keycloak` |
+
+| Schéma (base `warehouse`) | `dbt_owner` | `app_owner` | `app_rw` | `agent_ro` |
 |---|---|---|---|---|
-| `raw` | Tables brutes | écriture | — | — |
-| `analytics` | Étoile | écriture | — | lecture |
-| `app` | `conversation`, `message`, `query_log` | — | écriture | — |
+| `raw` | propriétaire | — | — | — |
+| `analytics` | propriétaire | — | — | `SELECT` (droits par défaut) |
+| `app` | — | propriétaire | `USAGE` + droits par table ci-dessous | — |
 
-Un changement de base ou de cluster séparé pour `app` reste possible si la confidentialité des questions l'exige.
+`public` est fermé (`REVOKE ALL … FROM PUBLIC`, exécution des fonctions retirée). Aucune extension `dblink`, `file_fdw` ni `adminpack`. Le MCP ouvre en plus chaque requête par `BEGIN READ ONLY`.
 
-### Initialisation Postgres (`infra/postgres/init.sql`)
+### Droits de `app_rw` par table (posés par la migration initiale, `app_owner`)
 
-```sql
--- Rôles
-CREATE ROLE dbt_owner LOGIN;  CREATE ROLE app_rw LOGIN;
-CREATE ROLE agent_ro_base NOLOGIN;
-CREATE ROLE agent_ro LOGIN IN ROLE agent_ro_base CONNECTION LIMIT 5;
+| Table | `SELECT` | `INSERT` | `UPDATE` | `DELETE` | Remarque |
+|---|---|---|---|---|---|
+| `conversation` | oui | oui | `title` seulement | — | Filtre `user_id = sub` dans l'API |
+| `message` | oui | oui | — | — | |
+| `query_log` | oui | oui | — | — | **Ajout seul** ; lu pour l'audit et le quota |
+| `feedback` | oui | oui | `status`, `reject_reason`, `promoted_to_dev`, `handled_by`, `handled_at` | — | |
+| `eval_run` | oui | oui | — | — | Écrit par `make eval` |
+| `eval_result` | oui | oui | — | — | Écrit par `make eval` |
+| `audit_access_log` | oui | oui | — | — | **Ajout seul** |
+| `analysis` | oui | oui | — | — | Une ligne par génération |
 
--- Retirer les accès par défaut
-REVOKE ALL ON SCHEMA public FROM PUBLIC;
-REVOKE ALL ON SCHEMA raw, app FROM PUBLIC, agent_ro_base;
-REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+`TRUNCATE` n'est jamais accordé. La purge de rétention (`query_log` > 90 jours) est faite par `app_owner` (tâche planifiée), pas par l'API.
 
--- agent_ro : lecture de analytics uniquement
-GRANT USAGE ON SCHEMA analytics TO agent_ro_base;
-GRANT SELECT ON ALL TABLES IN SCHEMA analytics TO agent_ro_base;
-ALTER DEFAULT PRIVILEGES FOR ROLE dbt_owner IN SCHEMA analytics
-  GRANT SELECT ON TABLES TO agent_ro_base;   -- survit aux recréations par dbt run
-
-ALTER ROLE agent_ro SET search_path = analytics;
-ALTER ROLE agent_ro SET default_transaction_read_only = on;
-ALTER ROLE agent_ro SET statement_timeout = '10s';
-ALTER ROLE agent_ro SET idle_in_transaction_session_timeout = '15s';
-ALTER ROLE agent_ro SET lock_timeout = '2s';
-ALTER ROLE agent_ro SET work_mem = '16MB';
-ALTER ROLE agent_ro SET temp_file_limit = '64MB';
-
--- Journal en ajout seul
-REVOKE UPDATE, DELETE, TRUNCATE ON app.query_log FROM app_rw;
-```
-
-Aucune extension `dblink` ni `file_fdw`. Le test de droits (CI) exécute `INSERT`, `DROP`, `SELECT` sur `raw`/`app` et `pg_read_file()` avec `agent_ro` et vérifie l'échec.
-
-### Tables applicatives
+### Tables applicatives (schéma `app`, 8 tables)
 
 ```
-conversation(id uuid, user_id text /* claim sub, sans FK */, title, created_at timestamptz)
-message(id, conversation_id → CASCADE, role, content, structured_json jsonb, created_at)
-query_log(id, trace_id, step int, attempt int, ts timestamptz default now(), user_id,
-          conversation_id, question_hash, tool, sql text, row_count int, truncated bool,
-          duration_ms int, status CHECK(ok|error|blocked), error_class,
-          tokens_in int, tokens_out int, tokens_cached int, cost_usd numeric(10,6),
-          prompt_version, semantic_version, model_id)
+conversation(id uuid PK, user_id text /* claim sub, sans FK */, title text, created_at timestamptz)
+message(id uuid PK, conversation_id uuid → conversation ON DELETE CASCADE, role text CHECK(user|assistant),
+        content text, structured_json jsonb /* AssistantMessage complet, sql compris */, created_at timestamptz)
+query_log(id bigint PK, trace_id text, step int, attempt int, ts timestamptz default now(),
+          user_id text /* HMAC-SHA256 du sub */, conversation_id uuid, question_hash text,
+          tool text /* query_metric | run_query | describe_schema | llm */,
+          status text CHECK(ok|error|blocked), error_class text, sql text, row_count int, truncated bool,
+          duration_ms int,
+          model_requested text, model_served text, effort text, stop_reason text, request_id text,
+          ttft_ms int, tokens_in int, tokens_out int, tokens_cache_read int, tokens_cache_write int,
+          cost_usd numeric(10,6), prompt_version text, semantic_version text)
+feedback(id bigint PK, ts timestamptz, user_id text, message_id uuid → message, category text, comment text,
+         consent_question bool, status text CHECK(nouveau|traite|rejete), reject_reason text,
+         promoted_to_dev bool default false, handled_by text, handled_at timestamptz)
+eval_run(id bigint PK, ts timestamptz, split text CHECK(test|dev|intent|followup|security|regression|analysis),
+         ablation text CHECK(none|a|b|c|d|e), model_requested text, model_served text, effort text,
+         prompt_version text, tools_hash text, semantic_version text, examples_hash text, git_sha text,
+         data_hash text, reference_date date, n int, pass1 numeric, pass3 numeric, ci_low numeric,
+         ci_high numeric, cost_usd numeric(10,4), rerun bool)
+eval_result(run_id bigint → eval_run, question_id text, category text, trap text, passes int /* 0 à 3 */,
+            expected jsonb, got jsonb, latency_ms int[], terminal_tool text)
+audit_access_log(id bigint PK, ts timestamptz, actor_id text, action text, target_trace_id text)
+analysis(id bigint PK, ts timestamptz, user_id text, period_start date, period_end date, region text,
+         semantic_version text, model_served text, payload jsonb /* DashboardAnalysis */, trace_id text)
 ```
 
-Tables ajoutées pour le back-office et l'analyse :
+Les colonnes de `query_log` suivent `QueryLogRecord` (`decision_core.models`) ; la colonne `step` relie un appel LLM et les appels d'outils qu'il a déclenchés. Les utilisateurs n'ont pas de table locale : Keycloak est la source unique (`user_id` = claim `sub` dans `conversation`, `feedback`, `analysis` ; pseudonyme HMAC dans `query_log`). Le texte de la question n'est pas stocké dans `query_log` (condensat seulement) : il vit dans `message`, visible de son propriétaire.
 
-```
-feedback(id, ts, user_id, message_id → message, category, comment, consent_question bool,
-         status CHECK(nouveau|en_analyse|corrige|rejete), reject_reason, assignee, promoted_to_dev bool)
-change_request(id, kind CHECK(kpi|semantic|settings), target, author_id, reviewer_id,
-               status CHECK(brouillon|en_revue|valide|rejete|applique), diff_text,
-               created_at, decided_at, commit_sha)
-eval_run(id, ts, split CHECK(dev|test), prompt_version, semantic_version, model_id, git_sha,
-         data_hash, reference_date, n, n_correct, ci_low, ci_high, cache_off bool)
-eval_result(run_id, question_id, category, trap, passes int /* 0 à 3 */, expected, got)
-audit_access_log(id, ts, admin_id, action, target_trace_id)   -- ajout seul, comme query_log
-analysis(id, ts, period, region, semantic_version, model_id, payload jsonb, kpi_trace_id)
-```
+Index : `conversation(user_id, created_at DESC)`, `message(conversation_id, created_at)`, `query_log(ts)`, `query_log(user_id, ts)`, `query_log(trace_id, step)`, `feedback(status, ts)`, `eval_result(run_id)`. Rétention du journal : 90 jours (`config.yaml`).
 
-Les utilisateurs n'ont pas de table locale : Keycloak est la source unique (`user_id` = claim `sub`). Les fichiers `kpis.yaml`, `glossary.yaml`, `examples.yaml` et `config.yaml` restent la source de vérité ; `change_request` ne garde que le diff et la décision, l'application passe par un commit.
-
-Index : `conversation(user_id, created_at DESC)`, `message(conversation_id, created_at)`, `query_log(ts)`, `(user_id, ts)`, `(trace_id, step)`. Le texte de la question n'est pas stocké dans `query_log` (hash seulement) : il vit dans `message`, visible de son propriétaire. Rétention du journal : 90 jours (configurable).
+Rendu : [DIAGRAMS §4](DIAGRAMS.md#4-tables-applicatives).
 
 ### Modèle analytique
 
-Voir SRS §7. Index sur `fact_transaction` : `date_id`, `client_id`, `agent_id`, index partiel `(date_id) WHERE statut = 'réussie'`. `ANALYZE` en hook post-run dbt.
+Voir [SRS §7](../SRS.md#7-modèle-de-données). Valeurs ASCII (`reussie`, `echouee`, `depot`…). Index sur `fact_transaction` : `date_id`, `client_id`, `agent_id`, index partiel `(date_id) WHERE statut = 'reussie'`. `ANALYZE` en hook post-run dbt.
 
-Volumétrie cible : 50 000 clients, 2 000 agents, 18 mois, 1,5 à 3 M de transactions ; 5 à 10 % d'échecs, 10 à 15 % hors agent, montants log-normaux avec valeurs aberrantes, Dakar à 35-40 % du volume.
+Volumétrie cible : 50 000 clients, 2 000 agents, 18 mois (2025-04-01 → 2026-09-30), 1,5 à 3 M de transactions ; 5 à 10 % d'échecs, 10 à 15 % hors agent, montants log-normaux avec valeurs aberrantes, Dakar à 35-40 % du volume.
 
 ### Tests dbt (ENF8)
 
-`unique` et `not_null` sur les clés ; `relationships` de chaque clé étrangère (y compris le membre −1) ; `accepted_values` sur `type` et `statut` ; montant > 0, frais ≥ 0 et ≤ montant ; transfert et paiement ↔ agent −1, dépôt et retrait ↔ agent réel ; `date_inscription` ≤ première transaction ; toute date du fait présente dans `dim_date` ; réconciliation `raw` ↔ `fact` (comptes et sommes) ; `max(date) ≤ REFERENCE_DATE` ; tests unitaires dbt figeant les 6 KPI sur un petit jeu fixe ; test de droits de `agent_ro`.
+`unique` et `not_null` sur les clés ; `relationships` de chaque clé étrangère (y compris les membres −1) ; `accepted_values` sur `type`, `statut`, `segment`, `statut_agent` (valeurs ASCII) ; montant > 0, frais ≥ 0 et ≤ montant ; transfert et paiement ↔ agent −1 et région d'agent −1, dépôt et retrait ↔ agent réel ; `date_inscription` ≤ première transaction ; toute date du fait présente dans `dim_date` ; réconciliation `raw` ↔ `fact` ; `max(date) ≤ REFERENCE_DATE` ; tests unitaires dbt figeant les 6 KPI sur un petit jeu fixe ; test de droits de `agent_ro` (`INSERT`, `DROP`, `SELECT` sur `raw`/`app`, `pg_read_file()` : tous en échec).
 
 ## 4. Flux d'une question
 
 ```mermaid
 sequenceDiagram
-  participant W as Web React
+  participant W as SPA
+  participant P as Proxy
   participant A as API
   participant G as Agent
+  participant L as Claude
   participant M as MCP (stdio)
   participant D as Postgres
-  W->>A: POST /conversations/{id}/messages (Bearer)
-  A->>A: JWT, rôle, propriété (user_id = sub), quota
+  W->>P: POST /api/conversations/{id}/messages (Bearer)
+  P->>A: même origine
+  A->>A: JWT, rôle, propriété (user_id = sub), quota (Postgres)
   A->>G: question + état résolu + 6 derniers échanges
-  loop boucle d'outils (≤ 6 étapes, 30 s)
-    G->>M: get_kpi / describe_table / run_query
-    M->>M: garde SQL (AST, liste blanche), EXPLAIN borné
-    M->>D: SELECT (agent_ro, 10 s)
-    D-->>M: lignes (≤ 1 001)
-    M-->>G: lignes, durée, truncated
-    A->>A: écrit query_log (étape, tentative)
+  loop ≤ 6 appels LLM, ≤ 8 outils, 30 s
+    G->>L: messages.stream (tool_choice auto, outils strict)
+    L-->>G: tool_use (données) ou outil terminal
+    G->>M: query_metric / run_query / describe_schema (délai restant)
+    M->>M: garde SQL, EXPLAIN borné
+    M->>D: BEGIN READ ONLY ; SELECT (agent_ro)
+    D-->>M: ≤ 1 001 lignes
+    M-->>G: ToolResult (sql réécrit, rows, duration_ms, truncated)
+    G-->>A: QueryLogRecord (outil et LLM)
+    A->>A: écrit query_log
+    A-->>W: SSE step
   end
-  G-->>A: AssistantMessage (validé)
-  A->>A: retire sql si rôle decideur
-  A-->>W: événements d'étape puis message final
+  G->>G: registre de faits → validateur → formateur (ou réponse gabarit)
+  G-->>A: AssistantMessage
+  A->>A: for_role(role) : retire sql pour le décideur ; écrit message
+  A-->>W: SSE final (ou error)
 ```
 
-Le flux émet des **événements d'étape** (intention reconnue, outil en cours) puis le **message final validé** : rien de non validé n'est affiché. Le client utilise `fetch` avec lecture de flux (pas `EventSource`, qui ne permet pas l'en-tête `Authorization`) ; aucun jeton en query string. Déconnexion → annulation de la requête SQL et de l'appel LLM. Plafond de durée et de flux simultanés par utilisateur.
+- Le flux émet des événements `step` (`StepEvent` : intention, outil, validation, mise en forme) puis **un seul** `final` (`AssistantMessage` validé) ou `error`. Rien de non validé n'est affiché.
+- Le client lit le flux par `fetch` + `ReadableStream` et un analyseur SSE ; `EventSource` n'est pas utilisé (pas d'en-tête `Authorization`). Aucun jeton en query string.
+- Déconnexion du client : annulation de la tâche asyncio, donc fermeture du flux Claude, envoi de `notifications/cancelled` au MCP, puis `pg_cancel_backend`.
+- Plafonds : 2 flux simultanés et 200 questions par jour et par utilisateur (`config.yaml`), calculés dans Postgres plus un sémaphore en mémoire.
+
+Rendu : [DIAGRAMS §5](DIAGRAMS.md#5-flux-dune-question).
 
 ## 5. Interface HTTP
 
+Toutes les routes sont servies sous `/api` par le proxy. Les rôles viennent de `resource_access["decision-web"].roles`.
+
 | Méthode et chemin | Rôle | Autorisation |
 |---|---|---|
-| `GET /me` | Profil et rôles | authentifié |
-| `POST /conversations` / `GET /conversations` | Créer / lister les siennes | authentifié |
-| `GET /conversations/{id}` | Messages ; 404 si autrui | propriétaire |
-| `POST /conversations/{id}/messages` | Question (flux) | propriétaire |
-| `GET /kpis` | KPI du tableau de bord (Should) | authentifié |
-| `GET /kpis/analysis?period=&region=` | Analyse de l'agent (mode analyse, `get_kpi` seul) | authentifié |
-| `POST /feedback` | Signaler une réponse (consentement explicite pour joindre la question) | propriétaire du message |
-| `GET /admin/overview?range=` | Requêtes, latence, coût, santé des composants | analyste, admin |
-| `GET /admin/users`, `POST /admin/users/invite`, `PATCH /admin/users/{id}`, `POST /admin/users/{id}/reset-mfa`, `DELETE /admin/users/{id}/sessions/{sid}` | Proxy vers l'API d'administration Keycloak ; ré-authentification récente exigée pour les actions sensibles | admin |
-| `GET /admin/kpis`, `GET /admin/semantic/{tables,glossary,examples}` | Lecture du catalogue et de la couche sémantique | analyste, admin |
-| `POST /admin/change-requests`, `POST /admin/change-requests/{id}/approve` | Soumission et validation (relecteur ≠ auteur) | analyste, admin |
-| `GET /admin/audit/queries`, `GET /admin/audit/queries/{trace_id}` | Journal technique et détail d'un appel ; chaque lecture du détail écrit `audit_access_log` | analyste, admin |
-| `GET /admin/security`, `POST /admin/security/rights-test` | Blocages, matrice de droits, test de droits de `agent_ro`, sessions | admin |
-| `GET /admin/eval/runs`, `POST /admin/eval/runs` | Historique et lancement (quota d'exécutions du jeu de test) | analyste, admin |
-| `GET /admin/feedback`, `PATCH /admin/feedback/{id}` | Signalements et leur traitement | analyste, admin |
-| `GET /admin/settings` | Paramètres courants ; tout changement passe par une demande de changement | admin |
+| `GET /api/health` | Santé de l'API et du sous-processus MCP | public (sans détail) |
+| `GET /api/me` | Profil et rôles | authentifié |
+| `POST /api/conversations` / `GET /api/conversations` | Créer / lister les siennes | authentifié |
+| `GET /api/conversations/{id}` | Messages ; 404 si autrui | propriétaire |
+| `POST /api/conversations/{id}/messages` | Question ; réponse en **flux SSE** (`step`, `final`, `error`) | propriétaire |
+| `GET /api/dashboard?period=&region=` | 6 KPI, période courante et précédente, dérivés (via `query_metric`) | authentifié |
+| `POST /api/dashboard/analysis` | Analyse de l'agent (workflow, un appel LLM) ; corps `{period, region}` ; écrit `app.analysis` | authentifié |
+| `POST /api/feedback` | Signaler une réponse (consentement explicite pour joindre la question) | propriétaire du message |
+| `GET /api/admin/ops?range=` | Exploitation et sécurité : latence, coût, taux de cache, blocages du garde, santé MCP | admin |
+| `POST /api/admin/ops/rights-test` | Test de droits de `agent_ro` (exécuté par le MCP) | admin |
+| `GET /api/admin/audit/queries` | Journal technique (condensats, sans texte de question) | analyste, admin |
+| `GET /api/admin/audit/queries/{trace_id}` | Détail d'un appel ; **écrit `audit_access_log`** | analyste, admin |
+| `GET /api/admin/eval/runs`, `GET /api/admin/eval/runs/{id}` | Exécutions et résultats d'évaluation (lecture) | analyste, admin |
+| `GET /api/admin/feedback`, `PATCH /api/admin/feedback/{id}` | Signalements ; `traite`, `rejete` (motif obligatoire), promotion vers le dev | analyste, admin |
+| `GET /api/admin/config/kpis`, `GET /api/admin/config/semantic` | Catalogue de KPI et couche sémantique en lecture, avec `semantic_version` | analyste, admin |
+| `GET /api/admin/config/settings` | Paramètres en lecture (sans secret) | admin |
 
-Contrat `AssistantMessage` (schéma Pydantic, types TypeScript générés) :
+Aucune route d'écriture de configuration ni de gestion d'utilisateurs. Plus de `GET /kpis/analysis`, de `/admin/users` ni de `/admin/change-requests`.
 
-```
-kind: "answer" | "clarification" | "refusal"
-text: str, period: str, scope: str
-table?: {columns, rows}, truncated: bool
-chart?: {type, x, y, series}      # calculé par le code, pas par le LLM
-tables: [str]
-sql?: str                         # présent uniquement si rôle analyste (retiré côté serveur)
-resolved_state: {kpi, période, périmètre, filtres}
-```
+### Contrat `AssistantMessage` (résumé)
+
+Défini dans `decision_core.models` (types TypeScript générés). Champs principaux :
+
+| Champ | Contenu |
+|---|---|
+| `kind` | `answer`, `clarification`, `refusal`, `error` |
+| `text` | Texte rendu par le code (gabarits `{{f…}}`/`{{d…}}` remplacés) |
+| `period`, `scope` | Période (`start`, `end`, libellé français) et périmètre, rendus par le code depuis l'état résolu |
+| `table`, `truncated`, `chart` | Données et graphique **calculés par le code** |
+| `tables`, `sql` | Tables `analytics` utilisées ; liste des SQL exécutés (retirée pour le décideur par `for_role`) |
+| `evidence` | Chaîne de preuve (`table`, `filtre`, `periode`, `operation`) |
+| `facts` | Faits cités (identifiant, valeur, unité, libellé, rendu exact) |
+| `caveats`, `certified`, `simplified` | Mises en garde ; `true` si chemin `query_metric` ; `true` si réponse gabarit |
+| `clarification`, `follow_up` | Clarification en attente (2-3 options) ; questions de suivi |
+| `resolved_state` | État résolu produit par le code (champs étiquetés `explicite`, `herite`, `defaut`) |
+| `trace_id` | Lien avec `query_log` |
 
 ## 6. Sécurité en profondeur
 
 ### Authentification et accès
-- Client Keycloak public, Authorization Code + PKCE ; pas de secret client dans le SPA ; jeton d'accès de 5 min conservé en mémoire (pas de `localStorage`).
-- L'API valide `iss`, `aud`, `exp`, `nbf`, algorithme RS256 uniquement (refus de `none` et de HS), clé par `kid` (JWKS en cache avec rotation), rôles du seul client attendu.
+- Client Keycloak public `decision-web`, Authorization Code + PKCE (S256) ; pas de secret client dans la SPA ; jeton d'accès de 5 min en mémoire, renouvelé en silence.
+- **Audience mapper** « Included Custom Audience » = `decision-api` sur une portée client dédiée (« Included Client Audience » donnerait un UUID interne).
+- L'API valide `iss`, `aud`, `exp`, `nbf`, RS256 uniquement (refus de `none` et de HS), clé par `kid` (JWKS en cache avec rotation), rôles du seul client attendu.
 - Toute requête applicative filtre `user_id = sub` ; 404 pour la ressource d'autrui ; tests d'accès croisé en CI.
-- CORS : origines exactes en liste blanche, jamais `*` ; jeton en en-tête, donc pas de cookie ni de CSRF ; HSTS, CSP stricte, `X-Content-Type-Options`.
+- Même origine derrière Caddy : pas de CORS (liste vide par défaut), jeton en en-tête, donc pas de cookie ni de CSRF ; HSTS, CSP stricte, `X-Content-Type-Options`.
+- Avertissement avant la fin de la **session SSO** (SSO Session Idle/Max), pas du jeton d'accès.
 
 ### Garde SQL (liste blanche, serveur MCP)
-Parcours de **tout l'AST sqlglot** (CTE, sous-requêtes, jointures) puis **réécriture du SQL depuis l'AST validé**, qui est la seule version exécutée.
+
+Bibliothèque `decision_sql_guard` : `guard_sql(sql, semantic, row_limit=…) → GuardResult(ok, sql, tables, error, scope)`. Parcours de **tout l'AST sqlglot** (CTE, sous-requêtes, jointures) puis **réécriture du SQL depuis l'AST validé**, seule version exécutée.
 
 | Règle | Détail |
 |---|---|
+| Bornes avant analyse | Longueur ≤ `sql.max_sql_chars` (5 000) ; profondeur d'AST ≤ `sql.max_ast_depth` (40) |
 | Instruction | Un seul `SELECT` ; refus de `INTO`, `FOR UPDATE`, `COPY`, CTE modifiantes, multi-instructions |
-| Tables | Uniquement `analytics.{fact_transaction, dim_client, dim_agent, dim_region, dim_date}`, qualifiées ; refus de `pg_catalog`, `information_schema`, `public` |
-| Fonctions | Liste fermée : agrégats, `date_trunc`, `extract`, `coalesce`, `round`, `nullif`, `lower`, `upper`, opérateurs usuels ; tout autre appel refusé (donc `pg_*`, `generate_series`, `set_config`, `dblink`) |
-| Limite | `LIMIT` imposé sur l'AST (écrase une valeur plus grande) ; 1 001 en interne pour détecter `truncated` |
-| Coût | `EXPLAIN (FORMAT JSON)` : refus au-delà d'un seuil de coût ou en cas de produit cartésien ; jointures limitées |
-| Lecture | Résultats lus en flux, sans `fetchall` |
-| Erreurs | Messages Postgres normalisés (classe d'erreur, sans noms d'objets) avant retour à l'agent |
-| Journalisation | Les refus du garde sont journalisés (`status = blocked`) |
+| Types de nœuds | Liste blanche des types sqlglot (et non liste noire) ; tout nœud inconnu est refusé |
+| Tables | Uniquement `analytics.{fact_transaction, dim_client, dim_agent, dim_region, dim_date}` ; refus de `pg_catalog`, `information_schema`, `public` |
+| Fonctions | Liste fermée (agrégats, `date_trunc`, `extract`, `coalesce`, `round`, `nullif`, `lower`, `upper`, opérateurs usuels) ; **noms normalisés** (minuscules, sans guillemets, sans schéma) avant comparaison |
+| Limite | `LIMIT` imposé sur l'AST à `row_limit + 1` (1 001) pour détecter `truncated` |
+| Coût | `EXPLAIN (FORMAT JSON)` : refus au-delà de `sql.max_plan_cost` |
+| Exécution | `BEGIN READ ONLY` ; `statement_timeout` ≤ délai reçu ; lecture en flux |
+| Portée | `scope` extrait de l'AST : bornes de `date_id`/`txn_ts`/`dim_date`, colonne de région jointe, prédicat sur `statut` ; comparé à `declared_scope` |
+| Cohérence sémantique | Avertissements (`semantic_warnings`) : agrégat sans `statut = 'reussie'` (sauf `toutes`), « agent actif » sur `statut_agent`, région incohérente avec `region_kind`, dénominateur du taux d'échec filtré |
+| Erreurs | Postgres normalisées et **actionnables** ; noms internes à `analytics` autorisés, le reste masqué |
+| Journalisation | Refus du garde : `status = blocked`, `error_class = guard_blocked` |
 
-Jeu de sécurité (≥ 25 payloads nommés) : CTE modifiante, `pg_read_file`, `pg_ls_dir`, `dblink`, `set_config`, `pg_sleep`, `lo_import`, `pg_catalog`, `information_schema`, multi-instructions, commentaires, encodages Unicode, `generate_series` géante, `CROSS JOIN`, `LIMIT` énorme.
+Jeu de sécurité (≥ 25 payloads nommés) : CTE modifiante, `pg_read_file` (y compris `"pg_read_file"`, `pg_read_file/**/(`, `pg_catalog.pg_read_file`), `pg_ls_dir`, `dblink`, `set_config`, `pg_sleep`, `lo_import`, `pg_catalog`, `information_schema`, multi-instructions, commentaires, `E'\''`, `$$`, encodages Unicode, `generate_series` géante, `CROSS JOIN`, `LIMIT` énorme ; plus 5 injections indirectes. Rendu : [DIAGRAMS §8](DIAGRAMS.md#8-garde-sql).
 
-`get_kpi` : paramètres liés (`:param`), typés, filtres validés par énumération, jamais interpolés. Modifier `kpis.yaml` exige une revue de code.
+`query_metric` : SQL compilé depuis `kpis.yaml`, paramètres liés, typés, filtres validés par énumération (régions de `kpis.yaml`), jamais interpolés ; passe aussi par le garde.
 
 ### Injection indirecte et rendu
-Résultats d'outils renvoyés en JSON typé, encadrés et marqués « données non fiables » ; colonnes de texte libre (`nom`, `ville`) exclues du contexte LLM sauf nécessité, tronquées et nettoyées ; rendu React en texte brut ou Markdown assaini (pas de HTML, d'images ni de liens externes) ; validateur de sortie (AGENTIC §6). L'agent ne peut modifier ni rôle ni périmètre d'un utilisateur.
+Résultats d'outils en JSON typé, marqués « données non fiables » ; `nom` et `ville` remplacés par des étiquettes opaques dans la vue du modèle, réinjectés par le formateur ; au plus 50 lignes vers le modèle ; rendu React en texte brut ou Markdown assaini (pas de HTML, d'images ni de liens externes) ; validateur de sortie ([AGENTIC_DESIGN §7](AGENTIC_DESIGN.md#7-validateur-et-formateur)). L'agent ne peut modifier ni rôle ni périmètre d'un utilisateur.
 
 ### Back-office et authentification
-- Les routes `/admin/*` vérifient le rôle **côté serveur** (claim du client attendu). La navigation masque les entrées interdites, mais c'est l'API qui refuse.
-- Le compte de service Keycloak ne gère que les utilisateurs et sessions du royaume (pas d'administration du royaume).
-- Actions sensibles (désactiver un compte, réinitialiser la MFA, révoquer une session, valider une demande de changement) : ré-authentification de moins de 5 min, puis journalisation.
-- Demandes de changement : le diff est calculé côté serveur sur les fichiers versionnés ; les validations automatiques (paramètres liés, tables autorisées, anti-fuite exemples/test) tournent avant la décision ; l'auteur ne peut pas valider ; l'application se fait par commit, jamais par écriture directe.
-- Le journal d'audit n'affiche jamais le texte d'une question (condensat seulement). Le détail d'un appel et l'export CSV écrivent `audit_access_log`.
-- Pages d'authentification : thème Keycloak sans logique propre ; messages neutres contre l'énumération de comptes ; limitation de débit ; aucun secret dans le thème. Session expirée : avertissement 20 s avant l'expiration du jeton, avec prolongation.
+- Les routes `/api/admin/*` vérifient le rôle **côté serveur**. La navigation masque les entrées interdites, mais c'est l'API qui refuse.
+- Back-office **en lecture** : aucune action sensible applicative. La gestion des comptes (invitation, désactivation, MFA, sessions) se fait dans la console Keycloak, avec ses propres journaux d'administration.
+- Le journal d'audit n'affiche jamais le texte d'une question. Le détail d'un appel écrit `audit_access_log`.
+- Pages d'authentification : thème Keycloakify pour la connexion et l'OTP, thème de base aux jetons ailleurs ; messages neutres contre l'énumération ; pas d'écran « compte verrouillé ».
 
 ### Audit, secrets, exploitation
-- `query_log` en ajout seul, écrit par `app_rw` ; on y trace aussi refus du garde, échecs d'authentification et lectures de `/audit/queries` ; versions de prompt, de couche sémantique et de modèle incluses.
+- `query_log` en ajout seul, écrit par `app_rw` : appels d'outils, appels LLM, refus du garde. Les échecs d'authentification sont dans les **événements Keycloak** (enregistrement activé, rétention configurée). Les lectures d'audit sont dans `audit_access_log`.
 - Filtre de masquage dans les journaux JSON (clés, jetons, en-têtes) ; secrets via secrets Docker, `.env` hors image ; scan de secrets en pré-commit et CI.
 - Keycloak en mode production, realm versionné **sans secret ni compte à mot de passe fixe**.
-- Le flux vers le LLM externe (questions, résultats synthétiques) est documenté (SRS §2).
+- Le flux vers le LLM externe (questions, résultats agrégés synthétiques) est documenté ([SRS §2](../SRS.md#2-périmètre)).
 
 ## 7. Déploiement
 
-Un seul `docker compose` : `postgres`, `keycloak`, `api` (FastAPI + agent + MCP en sous-processus), `web`.
+Un seul `docker compose` (`infra/compose.yaml`).
 
-- `make seed` : génère, charge, lance dbt et ses tests.
-- `make eval` : appelle **directement le module agent** (sans Keycloak, avec un `user_id` technique), cache désactivé par construction.
-- Import du realm : n'actualise pas un realm existant ; procédure de réinitialisation documentée.
-- Variables dans `.env.example`.
+| Service | Image | Notes |
+|---|---|---|
+| `proxy` | caddy 2.x | TLS interne, routes `/`, `/api`, `/auth` ; CSP, HSTS ; sert les fichiers statiques de la SPA |
+| `api` | Python 3.12 + uv | FastAPI + agent ; lance le MCP en sous-processus ; secrets `anthropic_api_key`, `app_rw_password`, `agent_ro_password`, `log_pseudonym_key` |
+| `keycloak` | quay.io/keycloak/keycloak:26.x (version figée) | `start --optimized`, base `keycloak`, `hostname`, `proxy-headers=xforwarded` ; thème monté en `.jar` ; événements activés |
+| `postgres` | postgres:17 | Volume ; `infra/postgres/init/` monté dans `/docker-entrypoint-initdb.d` |
+| `mailpit` | axllent/mailpit | Développement seulement (RF16) |
+
+| Tâche | Contenu |
+|---|---|
+| `make seed` | Générateur → `raw` → `dbt build` (tests compris) → test de droits |
+| `make migrate` | Alembic avec `app_owner` |
+| `make eval` | Appelle **directement** `Agent.answer` (sans Keycloak, `role = analyste`, utilisateur technique) ; écrit `eval_run`/`eval_result` avec `app_rw` |
+| `make bench` | Banc HTTP de latence (O2) à travers le proxy, avec un jeton technique |
+
+Import du realm : `--import-realm` n'écrase pas un realm existant ; procédure de réinitialisation documentée. Variables dans `.env.example`. En local sans Docker, `scripts/dev_pg.sh` lance un Postgres jetable (binaires 16, mêmes rôles ; aucune fonction propre à 17 n'est utilisée). Rendu : [DIAGRAMS §13](DIAGRAMS.md#13-déploiement-compose).
 
 ## 8. Observabilité
 
-`query_log` (métier) et journaux JSON (technique) liés par `trace_id` et `step`. Latences mesurées par étape (porte, outil, LLM), agent seul et bout en bout. Pas de pile de supervision au départ.
+`query_log` (métier) et journaux JSON (technique, MCP sur stderr) liés par `trace_id` et `step`. Latences mesurées par étape (porte, outil, LLM avec `ttft_ms`), agent seul et bout en bout. Taux de lecture du cache = `cache_read / (cache_read + cache_write + in)` ; alerte sous 70 % dans RF20. Pas de pile de supervision au départ.
 
 ## 9. Structure du dépôt
 
 ```
 decision-agent-IA/
-├── SRS.md
-├── docs/
-├── infra/        # compose, keycloak/{realm.json (sans secret), theme/}, postgres/init.sql
-├── data_gen/
-├── warehouse/    # dbt
-├── mcp_server/   # garde SQL + outils
-├── agent/        # boucle, prompts, semantic/{tables,kpis,glossary,examples}.yaml
-├── api/
-├── web/          # React + Vite, features/{conversation,dashboard,auth,admin}
-└── eval/         # dev.yaml, test.yaml, compare.py, rapports
+├── SRS.md, docs/                 # documents v5, docs/reviews/, docs/diagrams/
+├── pyproject.toml, uv.lock       # espace de travail uv unique (membres packages/*)
+├── packages/
+│   ├── core/          decision_core       # contrats Pydantic, couche sémantique, paramètres
+│   ├── sql_guard/     decision_sql_guard  # bibliothèque pure, payloads
+│   ├── mcp_server/    decision_mcp_server # MCPServer stdio (python -m decision_mcp_server)
+│   ├── agent/         decision_agent      # boucle, outils, LLMClient, faits, validateur, formateur, tableau de bord
+│   ├── api/           decision_api        # FastAPI, migrations Alembic, routes /api et /api/admin
+│   ├── data_gen/      decision_data_gen   # générateur synthétique
+│   └── eval/          decision_eval       # exécuteur, compare.py, statistiques, rapports
+├── semantic/          # tables, kpis, glossary, config (.yaml) ; examples.yaml (paquet agent)
+├── warehouse/         # projet dbt
+├── eval/              # jeux : test.yaml (hash figé), dev, intent, followup, security, regression, analysis
+├── infra/             # compose.yaml, Caddyfile, postgres/init/, keycloak/ (realm sans secret, thème)
+├── scripts/           # dev_pg.sh (Postgres local jetable)
+└── frontend/          # SPA ; migration Next.js → Vite prévue en P2 (D1, SRS Q-g)
 ```
+
+Le squelette `api/` (Fastro) est retiré. Le squelette `frontend/` (Next.js, ne compile pas) reste en attendant sa migration.
 
 ## 10. Décisions (ADR)
 
 | N° | Décision | Raison | Écarté |
 |---|---|---|---|
-| S1 | Postgres d'abord | Rôles réels (ENF3), gratuit, reproductible | Snowflake, DuckDB |
-| S2 | Snowflake en Could via un second target dbt | Portabilité de **dbt** seulement ; le SQL et les prompts de l'agent restent propres à Postgres | Snowflake dès le départ |
-| S3 | Monolithe FastAPI, MCP en sous-processus stdio | Moins de pièces ; l'API écrit seule `query_log` | Conteneur MCP, microservices |
-| S4 | Keycloak, client public PKCE | Décision utilisateur ; RF11 délégué | Auth maison |
-| S5 | `AssistantMessage` unique, `sql` filtré côté serveur | L'interface ne devine rien ; pas de fuite du SQL | Masquage côté interface |
-| S6 | Flux d'événements d'étape puis message validé | Latence perçue sans afficher du non validé | SSE de texte brut |
+| S1 | Postgres d'abord (17) | Rôles réels (ENF3), gratuit, reproductible, support long | Snowflake, DuckDB ; Postgres 16 |
+| S2 | Snowflake en Could via un second target dbt | Portabilité de **dbt** seulement | Snowflake dès le départ |
+| S3 | Monolithe FastAPI, MCP v2 en sous-processus stdio | Moins de pièces ; l'API écrit seule `query_log` ; **séparation des identifiants** (seul le sous-processus a le DSN `agent_ro`) | Conteneur MCP, connecteur MCP de l'API (HTTP public, hors ZDR) |
+| S4 | Keycloak, client public PKCE ; **RF11 dans la console Keycloak** | Décision utilisateur ; aucun proxy vers l'API d'administration au MVP | Auth maison ; écrans B02-B04 |
+| S5 | `AssistantMessage` unique, `sql` filtré côté serveur (`for_role`) | L'interface ne devine rien ; pas de fuite du SQL | Masquage côté interface |
+| S6 | **POST + format SSE** lu par `fetch` ; `step` puis un seul `final` | Latence perçue sans afficher du non validé ; en-tête `Authorization` conservé | `EventSource`, SSE de texte brut, WebSocket |
 | S7 | `REFERENCE_DATE` partout | Reproductibilité | `now()` |
-| S8 | Pas de cache SQL | Mauvais contexte en suivi ; masque la variance de l'évaluation | Cache par question |
-| S9 | Trois rôles Postgres, droits par défaut explicites | `dbt run` recrée les tables ; moindre privilège | Un rôle unique |
-| S10 | Back-office dans la même application React (routes `/admin`) | Un déploiement, mêmes composants et jetons de design | Seconde application |
-| S11 | Changements de configuration par demandes de changement et commits versionnés | Revue obligatoire, historique Git, pas d'écriture directe | Édition en base |
-| S12 | Pages d'authentification en thème Keycloak | Aucun mot de passe ne transite par nos services | Pages maison avec API de connexion |
-| S13 | Utilisateurs lus et modifiés via l'API d'administration Keycloak, sans table locale | Source de vérité unique | Copie locale des utilisateurs |
-| S14 | Analyse du tableau de bord en lecture seule sur `get_kpi` | Chiffres traçables, pas de SQL libre | Analyse par SQL généré |
+| S8 | Pas de cache de réponses ni de SQL ; cache de prompt autorisé | Mauvais contexte en suivi ; masquerait la variance | Cache par question |
+| S9 | Rôles Postgres séparés (`dbt_owner`, `app_owner`, `app_rw`, `agent_ro`, `keycloak`), droits par défaut explicites | `dbt run` recrée les tables ; le propriétaire des tables ne doit pas être le rôle de l'API | Rôle unique ; `app_rw` propriétaire |
+| S10 | Back-office dans la même SPA (routes `/admin`), **en lecture** | Un déploiement, mêmes composants | Seconde application ; SQLAdmin |
+| S11 | **Configuration modifiée par PR Git** ; l'API la lit et calcule `semantic_version` | Revue obligatoire par la protection de branche ; aucun identifiant Git dans le conteneur | `change_request` + commit par l'API |
+| S12 | Pages d'authentification en thème Keycloak (Keycloakify : connexion, OTP) | Aucun mot de passe ne transite par nos services | Pages maison |
+| S13 | Aucune table locale d'utilisateurs | Source de vérité unique : Keycloak | Copie locale |
+| S14 | Analyse du tableau de bord en **workflow** sur `query_metric` | Chiffres traçables, un appel LLM, évaluation simple | Boucle d'outils, SQL généré |
+| S15 | Proxy Caddy de même origine | Plus de CORS ; prérequis du mode production Keycloak ; CSP simple | Compose sans proxy, CORS en liste blanche |
+| S16 | Init Postgres limité aux rôles, bases et schémas ; droits de table par migration | Les tables n'existent pas à l'init ; corrige le `init.sql` v4 | Script unique avec `REVOKE` sur des tables absentes |
+| S17 | Événements d'authentification dans Keycloak ; `audit_access_log` pour les lectures d'audit | Chaque événement là où il se produit | Tout dans `query_log` |
+| S18 | Espace de travail uv, un paquet par composant | Tests isolés, dépendances explicites, contrats partagés dans `core` | Dépôt plat |
