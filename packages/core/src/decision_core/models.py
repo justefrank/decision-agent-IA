@@ -57,6 +57,9 @@ class ColumnInfo(_Model):
     role: ColumnRole
     unit: Unit | None = None
     label: str | None = None
+    # Projection dérivée d'une colonne `free_text: true` de tables.yaml (nom, ville), même sous un alias ou
+    # une fonction : calculé par le serveur MCP depuis l'AST ; l'agent opacifie d'après ce drapeau.
+    free_text: bool = False
 
 
 class ToolError(_Model):
