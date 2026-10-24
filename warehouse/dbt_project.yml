@@ -1,0 +1,37 @@
+# Projet dbt : raw (générateur) → analytics (étoile, SRS §7 et semantic/tables.yaml).
+# dbt-core 1.11 + dbt-postgres, rôle dbt_owner (profiles.yml lit l'environnement).
+name: decision_warehouse
+version: "0.5.0"
+config-version: 2
+profile: decision_warehouse
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: target
+clean-targets: [target, dbt_packages, logs]
+
+flags:
+  send_anonymous_usage_stats: false
+
+vars:
+  # Tient lieu d'« aujourd'hui » (S7) ; surchargeable : dbt build --vars '{reference_date: ...}'
+  reference_date: "2026-09-30"
+  start_date: "2025-04-01"
+  timezone: "Africa/Dakar"
+
+models:
+  decision_warehouse:
+    +materialized: table
+    marts:
+      # Les droits par défaut de dbt_owner (02-warehouse.sql) suffisent ; le GRANT explicite
+      # garantit que agent_ro garde SELECT après chaque dbt run (tables recréées).
+      +grants:
+        select: ["agent_ro_base"]
+    qa:
+      # Modèle de contrôle des KPI : hors analytics (invisible pour agent_ro).
+      +schema: raw
+      +materialized: view
+
+on-run-end:
+  - "{{ analyze_built_tables(results) }}"

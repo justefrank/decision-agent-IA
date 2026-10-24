@@ -1,0 +1,43 @@
+# Proxy de même origine (D5) : / SPA statique, /api/* → API, /auth/* → Keycloak.
+# TLS par l'autorité interne de Caddy (certificat local ; importer la racine de
+# /data/caddy/pki/authorities/local/root.crt dans le navigateur pour éviter l'alerte).
+{
+	admin off
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# API : pas de mise en tampon pour le flux SSE (POST + text/event-stream).
+	handle /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# Keycloak (http-relative-path=/auth) : il pose lui-même sa CSP sur ses pages.
+	handle /auth/* {
+		reverse_proxy keycloak:8080
+	}
+
+	# SPA : CSP stricte (aucun script en ligne, appels API et Keycloak sur la même origine,
+	# iframe de keycloak-js pour le silent check-sso sur la même origine).
+	handle {
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+			X-Frame-Options "DENY"
+		}
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

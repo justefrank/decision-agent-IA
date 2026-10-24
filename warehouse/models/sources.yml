@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Tables brutes chargées par COPY (packages/data_gen, rôle dbt_owner).
+    schema: raw
+    tables:
+      - name: raw_regions
+      - name: raw_holidays
+        description: Jours fériés du Sénégal (fêtes musulmanes à ± 1 jour).
+      - name: raw_clients
+      - name: raw_agents
+        description: Points de service ; date_fermeture renseignée pour les agents fermés.
+      - name: raw_transactions
+        description: Transactions ; agent_id NULL pour les transferts et paiements (hors agent).
+      - name: raw_meta
+        description: Graine, échelle et data_hash du dernier chargement.

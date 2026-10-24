@@ -1,0 +1,16 @@
+# Profil dbt : tout vient de l'environnement (voir .env.example), rôle dbt_owner.
+#   DBT_PROFILES_DIR=warehouse dbt build --project-dir warehouse
+decision_warehouse:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_PG_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_PG_PORT', '5432') | int }}"
+      user: "{{ env_var('DBT_PG_USER', 'dbt_owner') }}"
+      password: "{{ env_var('DBT_PG_PASSWORD') }}"
+      dbname: "{{ env_var('DBT_PG_DBNAME', 'warehouse') }}"
+      schema: analytics
+      threads: 4
+      connect_timeout: 10
+      sslmode: "{{ env_var('DBT_PG_SSLMODE', 'prefer') }}"

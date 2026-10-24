@@ -11,6 +11,8 @@ CREATE DATABASE keycloak OWNER keycloak;
 REVOKE ALL ON DATABASE warehouse FROM PUBLIC;
 REVOKE ALL ON DATABASE keycloak FROM PUBLIC;
 GRANT CONNECT ON DATABASE warehouse TO dbt_owner, app_owner, app_rw, agent_ro_base;
+-- dbt_owner : tables temporaires nécessaires aux tests unitaires dbt (jamais pour agent_ro).
+GRANT TEMPORARY ON DATABASE warehouse TO dbt_owner;
 
 -- Durcissement de agent_ro (SYSTEM_DESIGN §3). La transaction BEGIN READ ONLY côté MCP s'y ajoute.
 ALTER ROLE agent_ro SET search_path = analytics;

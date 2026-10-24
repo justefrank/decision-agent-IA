@@ -1,0 +1,176 @@
+# Déploiement mono-hôte (SYSTEM_DESIGN v5 §5.3) : proxy Caddy de même origine devant la SPA,
+# l'API et Keycloak ; Postgres 17 (bases warehouse et keycloak) ; Mailpit en profil dev.
+#
+#   make secrets            # crée infra/secrets/*.txt (aléatoires, ignorés par git)
+#   docker compose -f infra/compose.yaml --profile dev up -d --build
+#   make seed PG_PORT=5432  # générateur → raw → dbt build (depuis l'hôte)
+#
+# Versions figées ; les monter explicitement (revue de compatibilité, ENF11).
+name: decision
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    secrets:
+      - postgres_password
+      - dbt_owner_password
+      - app_owner_password
+      - app_rw_password
+      - agent_ro_password
+      - keycloak_db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Seul 00-roles.sh est exécuté par l'entrypoint (il ne parcourt pas les sous-dossiers :
+      # « sql/ » est ignoré). Le script lit ensuite sql/01-roles.sql et sql/02-warehouse.sql.
+      - ./postgres/init/00-roles.sh:/docker-entrypoint-initdb.d/00-roles.sh:ro
+      - ./postgres/init/sql:/docker-entrypoint-initdb.d/sql:ro
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"   # pour make seed / migrate depuis l'hôte seulement
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    # Mode production (« start ») derrière le proxy : TLS terminé par Caddy, en-têtes X-Forwarded.
+    # Keycloak n'a pas de convention *_FILE : les secrets sont lus avant le lancement.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        export KC_DB_PASSWORD="$$(cat /run/secrets/keycloak_db_password)"
+        export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)"
+        exec /opt/keycloak/bin/kc.sh start --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_HOSTNAME: https://${PUBLIC_HOST:-localhost}/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "false"
+      # Administrateur temporaire du realm master : à remplacer par un compte nominatif avec MFA
+      # puis à supprimer (le realm « decision » n'a aucun utilisateur à mot de passe fixe).
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin-temporaire}
+    secrets:
+      - keycloak_db_password
+      - keycloak_admin_password
+    volumes:
+      # --import-realm n'écrase jamais un realm existant (voir README, réinitialisation).
+      - ./keycloak/realm:/opt/keycloak/data/import:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/api.Dockerfile
+    image: decision-api:local
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+    environment:
+      ENVIRONMENT: prod
+      REFERENCE_DATE: ${REFERENCE_DATE:-2026-09-30}
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: warehouse
+      KEYCLOAK_ISSUER: https://${PUBLIC_HOST:-localhost}/auth/realms/decision
+      # JWKS lu sur le réseau interne (l'émetteur reste l'URL publique, fixée par KC_HOSTNAME).
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/auth/realms/decision/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: decision-api
+      KEYCLOAK_CLIENT_ID: decision-web
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
+      LLM_EFFORT: ${LLM_EFFORT:-medium}
+      CORS_ORIGINS: ""
+    secrets:
+      - app_rw_password
+      - agent_ro_password
+      - anthropic_api_key
+      - log_pseudonym_key
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Migrations Alembic (rôle app_owner) : docker compose -f infra/compose.yaml run --rm migrate
+  migrate:
+    image: decision-api:local
+    profiles: [tools]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: warehouse
+    secrets:
+      - app_owner_password
+    command: ["alembic", "-c", "/app/packages/api/alembic.ini", "upgrade", "head"]
+
+  proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+      - keycloak
+    environment:
+      SITE_ADDRESS: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # SPA statique compilée (web/dist) ; WEB_DIST pour un autre chemin.
+      - ${WEB_DIST:-../web/dist}:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  mailpit:
+    image: axllent/mailpit:v1.27.0
+    profiles: [dev]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"   # interface web ; SMTP 1025 sur le réseau interne (realm)
+    expose:
+      - "1025"
+
+secrets:
+  postgres_password: {file: ./secrets/postgres_password.txt}
+  dbt_owner_password: {file: ./secrets/dbt_owner_password.txt}
+  app_owner_password: {file: ./secrets/app_owner_password.txt}
+  app_rw_password: {file: ./secrets/app_rw_password.txt}
+  agent_ro_password: {file: ./secrets/agent_ro_password.txt}
+  keycloak_db_password: {file: ./secrets/keycloak_db_password.txt}
+  keycloak_admin_password: {file: ./secrets/keycloak_admin_password.txt}
+  anthropic_api_key: {file: ./secrets/anthropic_api_key.txt}
+  log_pseudonym_key: {file: ./secrets/log_pseudonym_key.txt}
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
