@@ -1,0 +1,50 @@
+# Espace de travail uv : un seul environnement pour tous les paquets Python.
+#   uv sync --all-packages     installe tout
+#   uv run pytest              lance tous les tests
+[project]
+name = "decision-agent-workspace"
+version = "0.5.0"
+description = "Agent conversationnel d'aide à la décision : espace de travail (non déployé)."
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+decision-core = { workspace = true }
+decision-sql-guard = { workspace = true }
+decision-mcp-server = { workspace = true }
+decision-agent = { workspace = true }
+decision-api = { workspace = true }
+decision-data-gen = { workspace = true }
+decision-eval = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["packages"]
+addopts = "--import-mode=importlib"
+markers = [
+    "db: tests nécessitant un Postgres (variable TEST_PG_DSN ou binaires locaux)",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+ignore = ["S101", "S608"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true

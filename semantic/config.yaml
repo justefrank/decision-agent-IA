@@ -1,0 +1,27 @@
+# Paramètres de l'agent et de l'API (modifiables par PR Git, ENF11).
+reference_date: "2026-09-30"   # tient lieu d'« aujourd'hui » (S7) ; surchargeable par REFERENCE_DATE
+llm:
+  model: claude-sonnet-5-5
+  effort: medium
+  max_tokens_per_call: 8000
+agent:
+  max_llm_calls: 6
+  max_tool_calls: 8
+  max_sql_fixes_per_query: 2
+  validator_retries: 1
+  wall_seconds: 30
+  rows_to_llm: 50
+  history_exchanges: 6
+  max_question_chars: 1000
+  cost_cap_usd: 0.10
+sql:
+  row_limit: 1000              # lignes renvoyées ; 1 001 lues pour détecter `truncated`
+  statement_timeout_s: 10
+  max_sql_chars: 5000
+  max_ast_depth: 40
+  max_plan_cost: 5000000
+quota:
+  questions_per_user_per_day: 200
+  concurrent_streams_per_user: 2
+retention:
+  query_log_days: 90

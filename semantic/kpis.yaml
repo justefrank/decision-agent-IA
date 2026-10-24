@@ -1,0 +1,117 @@
+# Couche métrique : source unique des KPI (SRS §7, AGENTIC §4).
+# Compilée de façon déterministe par l'outil MCP `query_metric` :
+#   métriques × dimensions × filtres × comparaison × grain → un SELECT paramétré.
+# Les fragments SQL ci-dessous utilisent les alias fixes :
+#   f = analytics.fact_transaction, d = analytics.dim_date (toujours joint),
+#   les autres alias sont déclarés par chaque dimension (`joins`).
+# Toute modification passe par une PR Git (ENF11) ; les tests unitaires dbt figent les 6 KPI.
+version: 1
+
+metrics:
+  volume_transactions:
+    label: Volume de transactions
+    description: Nombre de transactions réussies sur la période.
+    unit: count
+    sql: "COUNT(*) FILTER (WHERE f.statut = 'reussie')"
+    additive: true
+    default_region_kind: null
+  valeur_transferee:
+    label: Valeur transférée
+    description: Somme des montants des transactions réussies, tous types (filtrable par type).
+    unit: xof
+    sql: "COALESCE(SUM(f.montant_xof) FILTER (WHERE f.statut = 'reussie'), 0)"
+    additive: true
+    default_region_kind: null
+  revenus_frais:
+    label: Revenus de frais
+    description: Somme des frais des transactions réussies.
+    unit: xof
+    sql: "COALESCE(SUM(f.frais_xof) FILTER (WHERE f.statut = 'reussie'), 0)"
+    additive: true
+    default_region_kind: region_agent
+  clients_actifs:
+    label: Clients actifs
+    description: >
+      Clients distincts ayant au moins une transaction réussie dans la période.
+      Sans période explicite : les 30 derniers jours se terminant à REFERENCE_DATE.
+    unit: count
+    sql: "COUNT(DISTINCT f.client_id) FILTER (WHERE f.statut = 'reussie')"
+    additive: false
+    default_region_kind: region_client
+    default_period: last_30_days
+  agents_actifs:
+    label: Agents actifs
+    description: >
+      Points de service distincts (hors « Hors agent ») ayant au moins une transaction réussie
+      dans la période. Différent de statut_agent. Sans période explicite : 30 derniers jours.
+    unit: count
+    sql: "COUNT(DISTINCT f.agent_id) FILTER (WHERE f.statut = 'reussie' AND f.agent_id <> -1)"
+    additive: false
+    default_region_kind: region_agent
+    default_period: last_30_days
+  taux_echec:
+    label: Taux d'échec
+    description: Transactions échouées / (réussies + échouées) sur la période.
+    unit: ratio
+    sql: "COUNT(*) FILTER (WHERE f.statut = 'echouee')::numeric / NULLIF(COUNT(*), 0)"
+    additive: false
+    default_region_kind: null
+
+dimensions:
+  region_agent:
+    label: Région du point de service
+    joins: ["JOIN analytics.dim_region ra ON ra.region_id = f.region_agent_id"]
+    column: ra.region
+    filter_column: ra.region
+  region_client:
+    label: Région du client
+    joins: ["JOIN analytics.dim_region rc ON rc.region_id = f.region_client_id"]
+    column: rc.region
+    filter_column: rc.region
+  type:
+    label: Type de transaction
+    joins: []
+    column: f.type
+    filter_column: f.type
+    values: [depot, retrait, transfert, paiement]
+  segment:
+    label: Segment client
+    joins: ["JOIN analytics.dim_client c ON c.client_id = f.client_id"]
+    column: c.segment
+    filter_column: c.segment
+    values: [particulier, commercant, entreprise]
+  agent:
+    label: Point de service
+    joins: ["JOIN analytics.dim_agent a ON a.agent_id = f.agent_id"]
+    column: a.agent_id
+    label_column: a.nom        # texte libre : remplacé par une étiquette opaque côté modèle
+    filter_column: a.agent_id
+    where: "f.agent_id <> -1"  # un classement d'agents exclut « Hors agent »
+
+grains:
+  day: d.date
+  week: "date_trunc('week', d.date)::date"
+  month: d.debut_mois
+  quarter: "date_trunc('quarter', d.date)::date"
+
+# Valeurs autorisées pour les filtres de région (dim_region, hors ligne -1).
+regions:
+  - Dakar
+  - Thiès
+  - Diourbel
+  - Kaolack
+  - Saint-Louis
+  - Ziguinchor
+  - Louga
+  - Fatick
+  - Kolda
+  - Tambacounda
+  - Kaffrine
+  - Kédougou
+  - Matam
+  - Sédhiou
+
+limits:
+  max_metrics: 6
+  max_group_by: 2
+  max_rank_limit: 50
