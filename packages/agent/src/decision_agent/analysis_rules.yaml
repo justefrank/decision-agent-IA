@@ -1,0 +1,16 @@
+# Règles versionnées du générateur de constats candidats (mode analyse, AGENTIC v5 §3.8).
+# Toute modification change `version`, enregistrée avec chaque analyse.
+version: "2026-10-24.1"
+national_variation:
+  pct_min: 5.0          # |variation| en % pour les volumes et montants
+  pp_min: 0.5           # |écart| en points pour les taux
+regional_deviation:
+  z_min: 1.5            # écart à la moyenne inter-régions, en écarts-types
+  min_regions: 4
+  metrics: [taux_echec, revenus_frais, valeur_transferee, volume_transactions, clients_actifs, agents_actifs]
+failure_rate_alert:
+  ratio_min: 0.08       # taux d'échec national au-dessus duquel un constat « À surveiller » est proposé
+# Sens « défavorable » d'une hausse (taux d'échec) : la hausse est « À surveiller ».
+higher_is_worse: [taux_echec]
+max_candidates_to_llm: 6
+max_findings: 3
