@@ -1,0 +1,13 @@
+[project]
+name = "decision-core"
+version = "0.5.0"
+description = "Contrats partagés (AssistantMessage, résultats d'outils, état résolu) et chargement de la couche sémantique."
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.9", "pydantic-settings>=2.6", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decision_core"]

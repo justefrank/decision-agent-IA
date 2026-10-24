@@ -1,11 +1,13 @@
 flowchart LR
-  GEN["Générateur de données (graine, REFERENCE_DATE)"] --> DBT["dbt + tests"]
-  DBT --> REF["Références recalculées depuis les données"]
-  DEV["eval/dev.yaml (~30)"] --> RUN
-  TEST["eval/test.yaml (40, 5 exécutions max par jalon)"] --> RUN
-  RUN["make eval : module agent direct, cache absent, 3 passes"] --> CMP["compare.py : résultat exécuté et chiffre cité"]
+  GEN["Générateur (graine, REFERENCE_DATE)"] --> DBT["dbt + tests"]
+  DBT --> REF["Références recalculées<br/>(SQL relus par une seconde personne)"]
+  TEST["test (40, hash figé,<br/>5 exécutions max par jalon)"] --> RUN
+  DEV["dev (~40)"] --> RUN
+  OTH["intent (~60), followup (~12),<br/>security (25 + 5 indirectes),<br/>regression, analysis (12 + 4)"] --> RUN
+  RUN["make eval : Agent.answer direct,<br/>3 passes, sans cache de réponses ni de SQL,<br/>fallbacks désactivé"] --> CMP["compare.py : résultat exécuté,<br/>faits cités (registre), resolved_state,<br/>outil terminal"]
   REF --> CMP
-  CMP --> STAT["Wilson 95 % + comptes bruts par catégorie"]
-  STAT --> ABL["Ablations : sans exemples, sans get_kpi, sans validateur, modèle seul"]
-  STAT --> BO["eval_run / eval_result : back-office Évaluation"]
-  FB["Signalements validés"] -- "jamais vers le test" --> DEV
+  CMP --> STAT["pass^3 + Wilson (test seul)<br/>pass@1 + bootstrap groupé<br/>comptes bruts par catégorie"]
+  STAT --> ABL["Ablations a-e appariées (McNemar),<br/>descriptives"]
+  STAT --> BO["eval_run / eval_result :<br/>back-office B11"]
+  BENCH["make bench : banc HTTP (O2)"] --> BO
+  FB["Signalements promus"] -- "jamais vers le test" --> DEV

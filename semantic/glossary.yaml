@@ -1,0 +1,44 @@
+# Glossaire métier (SRS §7). Inclus tel quel dans le contexte de l'agent.
+# Politique par champ (AGENTIC v5 §6) : ce qui manque est soit déduit avec un défaut annoncé,
+# soit demandé par une seule clarification.
+terms:
+  - term: région
+    rule: >
+      « région » seule est ambiguë : région du point de service (region_agent) ou région du client
+      (region_client). Défaut : region_agent pour les agents et les frais, region_client pour les
+      clients. Pour volume, valeur transférée et taux d'échec il n'y a pas de défaut : demander.
+      Le sens retenu est toujours rappelé dans la réponse.
+  - term: agent actif
+    rule: >
+      Point de service avec au moins une transaction réussie sur la période. Ne pas confondre avec
+      statut_agent (ouvert/fermé), qui est un statut administratif.
+  - term: client actif
+    rule: >
+      Client avec au moins une transaction réussie sur la période. Sans période : 30 derniers jours
+      se terminant à REFERENCE_DATE.
+  - term: aujourd'hui
+    rule: >
+      « aujourd'hui », « ce mois-ci », « cette année » se calculent à partir de REFERENCE_DATE,
+      jamais de la date système.
+  - term: hors agent
+    rule: >
+      Les transferts et paiements n'ont pas de point de service : agent_id = -1 (« Hors agent »),
+      region_agent_id = -1 (« Non applicable »). Un classement d'agents exclut cette ligne.
+  - term: taux d'échec
+    rule: >
+      échouées / (réussies + échouées). Le dénominateur inclut toutes les transactions, pas
+      seulement les réussies.
+  - term: transaction
+    rule: >
+      Sauf mention contraire (« échouées », « toutes »), un volume ou un montant porte sur les
+      transactions réussies.
+  - term: destinataire
+    rule: >
+      Le modèle ne contient pas le destinataire d'un transfert : toute question sur les
+      destinataires est hors périmètre.
+
+field_policy:
+  kpi: {missing: clarify, ambiguous: clarify}
+  period: {missing: default_announced, default: month_of_reference_date}
+  region_kind: {missing: default_from_metric_or_clarify}
+  geographic_scope: {missing: default_announced, default: national}

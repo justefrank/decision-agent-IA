@@ -1,0 +1,224 @@
+version: 2
+
+# Contrats appliqués (types exacts de semantic/tables.yaml, NOT NULL, CHECK, clés primaires)
+# et tests dbt de SYSTEM_DESIGN §3 « Tests dbt ». Les tests singuliers sont dans tests/.
+
+models:
+  - name: dim_region
+    description: Une région ; -1 = « Non applicable » (transactions hors agent).
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: region_id
+        data_type: integer
+        constraints: [{type: not_null}, {type: primary_key}]
+        data_tests: [unique, not_null]
+      - name: region
+        data_type: text
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: pays
+        data_type: text
+        constraints: [{type: not_null}]
+
+  - name: dim_date
+    description: Un jour, de start_date à reference_date.
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: date_id
+        data_type: integer
+        constraints: [{type: not_null}, {type: primary_key}]
+        data_tests: [unique, not_null]
+      - name: date
+        data_type: date
+        constraints: [{type: not_null}]
+        data_tests: [unique, not_null]
+      - name: jour_semaine
+        data_type: smallint
+        constraints: [{type: not_null}, {type: check, expression: "jour_semaine between 1 and 7"}]
+      - name: semaine_iso
+        description: Semaine ISO 8601 (1-53). À regrouper avec annee_iso, jamais avec annee.
+        data_type: smallint
+        constraints: [{type: not_null}, {type: check, expression: "semaine_iso between 1 and 53"}]
+      - name: annee_iso
+        description: >-
+          Année ISO 8601 de la semaine (peut différer de annee fin décembre / début janvier :
+          le 29/12/2025 est en semaine 1 de 2026). Regrouper par (annee_iso, semaine_iso).
+        data_type: smallint
+        constraints: [{type: not_null}]
+      - name: mois
+        data_type: smallint
+        constraints: [{type: not_null}]
+      - name: nom_mois
+        data_type: text
+        constraints: [{type: not_null}]
+      - name: trimestre
+        data_type: smallint
+        constraints: [{type: not_null}]
+      - name: annee
+        data_type: smallint
+        constraints: [{type: not_null}]
+      - name: est_weekend
+        data_type: boolean
+        constraints: [{type: not_null}]
+      - name: jour_ferie
+        data_type: boolean
+        constraints: [{type: not_null}]
+      - name: debut_mois
+        data_type: date
+        constraints: [{type: not_null}]
+      - name: fin_mois
+        data_type: date
+        constraints: [{type: not_null}]
+
+  - name: dim_client
+    description: Un client (SCD1).
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: client_id
+        data_type: integer
+        constraints: [{type: not_null}, {type: primary_key}]
+        data_tests: [unique, not_null]
+      - name: date_inscription
+        data_type: date
+        constraints: [{type: not_null}]
+      - name: region_client_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_region'), field: region_id}
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+                quote: false
+      - name: segment
+        data_type: text
+        constraints:
+          - type: not_null
+          - type: check
+            expression: "segment in ('particulier', 'commercant', 'entreprise')"
+        data_tests:
+          - accepted_values:
+              arguments: {values: [particulier, commercant, entreprise]}
+
+  - name: dim_agent
+    description: Un point de service ; -1 = « Hors agent ».
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: agent_id
+        data_type: integer
+        constraints: [{type: not_null}, {type: primary_key}]
+        data_tests: [unique, not_null]
+      - name: nom
+        data_type: text
+        constraints: [{type: not_null}]
+      - name: ville
+        data_type: text
+        data_tests:
+          - not_null:
+              config: {where: "agent_id <> -1"}
+      - name: region_agent_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_region'), field: region_id}
+      - name: date_activation
+        data_type: date
+        data_tests:
+          - not_null:
+              config: {where: "agent_id <> -1"}
+      - name: statut_agent
+        data_type: text
+        constraints:
+          - type: check
+            expression: "statut_agent in ('ouvert', 'ferme')"
+        data_tests:
+          - accepted_values:
+              arguments: {values: [ouvert, ferme]}
+          - not_null:
+              config: {where: "agent_id <> -1"}
+
+  - name: fact_transaction
+    description: Une transaction (dépôt, retrait, transfert, paiement), réussie ou échouée.
+    config:
+      contract: {enforced: true}
+    constraints:
+      - type: check
+        name: ck_frais_bornes
+        expression: "frais_xof >= 0 and frais_xof <= montant_xof"
+      - type: check
+        name: ck_type_agent
+        expression: "(type in ('transfert', 'paiement')) = (agent_id = -1 and region_agent_id = -1)"
+    columns:
+      - name: transaction_id
+        data_type: bigint
+        constraints: [{type: not_null}, {type: primary_key}]
+        data_tests: [unique, not_null]
+      - name: client_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_client'), field: client_id}
+      - name: agent_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_agent'), field: agent_id}
+      - name: region_client_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_region'), field: region_id}
+      - name: region_agent_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_region'), field: region_id}
+      - name: date_id
+        data_type: integer
+        constraints: [{type: not_null}]
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_date'), field: date_id}
+      - name: txn_ts
+        data_type: timestamptz
+        constraints: [{type: not_null}]
+      - name: type
+        data_type: text
+        constraints:
+          - type: not_null
+          - type: check
+            expression: "type in ('depot', 'retrait', 'transfert', 'paiement')"
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: [depot, retrait, transfert, paiement]}
+      - name: montant_xof
+        data_type: numeric(14,0)
+        constraints:
+          - type: not_null
+          - type: check
+            expression: "montant_xof > 0"
+      - name: frais_xof
+        data_type: numeric(12,0)
+        constraints: [{type: not_null}]
+      - name: statut
+        data_type: text
+        constraints:
+          - type: not_null
+          - type: check
+            expression: "statut in ('reussie', 'echouee')"
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: [reussie, echouee]}

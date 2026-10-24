@@ -7,7 +7,12 @@ flowchart LR
   M --> SQLV
   M --> BOR
   M --> BOA
+  M -.-> KCC
   BASE["Socle applicatif<br/>Poser une question (RF1, RF2, RF14)<br/>Graphiques (RF3)<br/>Historique et suivi (RF5, RF6)<br/>Tableau de bord et analyse (RF4, RF17)<br/>Signaler une réponse (RF10)<br/>Connexion et récupération d'accès (RF15, RF16)"]
   SQLV["Voir le SQL et les tables (RF8)"]
-  BOR["Back-office analyste<br/>Catalogue KPI (RF9)<br/>Couche sémantique (RF18)<br/>Journal d'audit (RF13)<br/>Évaluation (RF19)<br/>Signalements"]
-  BOA["Back-office administrateur seul<br/>Utilisateurs et rôles (RF11)<br/>Sécurité et exploitation (RF20)<br/>Paramètres (RF12)"]
+  BOR["Back-office en lecture, analyste<br/>B05 KPI et couche sémantique (RF9, RF18)<br/>B08 Journal d'audit (RF13)<br/>B11 Évaluation (RF19)<br/>B12 Signalements (RF10)"]
+  BOA["Back-office, administrateur seul<br/>B01 Exploitation et sécurité (RF20)<br/>B05 onglet Paramètres (RF12)"]
+  KCC["Console Keycloak<br/>Utilisateurs et rôles (RF11)"]
+  PR["PR Git relue<br/>(KPI, sémantique, paramètres)"]
+  A -.-> PR
+  M -.-> PR

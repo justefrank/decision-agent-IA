@@ -12,9 +12,9 @@ erDiagram
   message {
     uuid id PK
     uuid conversation_id FK
-    text role
+    text role "user assistant"
     text content
-    jsonb structured_json
+    jsonb structured_json "AssistantMessage"
     timestamptz created_at
   }
   query_log {
@@ -22,63 +22,62 @@ erDiagram
     text trace_id
     int step
     int attempt
-    text user_id
-    text tool
+    text user_ref "HMAC du sub"
+    text tool "query_metric run_query describe_schema llm"
+    text status "ok error blocked"
+    text error_class
     text sql
     int row_count
     bool truncated
     int duration_ms
-    text status "ok error blocked"
+    text model_served
+    text effort
+    int tokens_cache_read
     numeric cost_usd
-    text prompt_version
     text semantic_version
-    text model_id
   }
   feedback {
     bigint id PK
     uuid message_id FK
     text category
     bool consent_question
-    text status
+    text status "nouveau traite rejete"
+    text reject_reason
     bool promoted_to_dev
-  }
-  change_request {
-    bigint id PK
-    text kind "kpi semantic settings"
-    text author_id
-    text reviewer_id
-    text status
-    text diff_text
-    text commit_sha
   }
   eval_run {
     bigint id PK
-    text split "dev test"
-    text prompt_version
-    text semantic_version
+    text split "test dev intent ..."
+    text ablation "none a b c d e"
     text model_id
+    text semantic_version
     text git_sha
     int n
-    int n_correct
+    numeric pass1
+    numeric pass3
     numeric ci_low
     numeric ci_high
+    jsonb report "traçabilité complète"
   }
   eval_result {
     bigint run_id FK
     text question_id
     text category
-    int passes
+    int passes "0 a 3"
+    jsonb got
   }
   audit_access_log {
     bigint id PK
-    text admin_id
+    text actor_sub
+    text actor_role
     text action
     text target_trace_id
   }
   analysis {
     bigint id PK
-    text period
+    date period_start
+    date period_end
     text region
     text semantic_version
-    jsonb payload
+    jsonb payload "DashboardAnalysis"
   }

@@ -1,0 +1,77 @@
+# Couche sémantique : tables et colonnes du schéma analytics (modèle en étoile).
+# Source unique, lue par le serveur MCP (describe_schema, garde SQL) et par l'agent (contexte).
+# Toute modification passe par une PR Git (ENF11).
+schema: analytics
+tables:
+  fact_transaction:
+    grain: une transaction
+    description: Transactions Wave (dépôts, retraits, transferts, paiements), réussies ou échouées.
+    columns:
+      transaction_id: {type: bigint, description: Identifiant de la transaction, key: primary}
+      client_id: {type: integer, description: Client émetteur, references: dim_client.client_id}
+      agent_id:
+        type: integer
+        description: Point de service. -1 = « Hors agent » (transferts et paiements).
+        references: dim_agent.agent_id
+      region_client_id: {type: integer, description: Région du client, references: dim_region.region_id}
+      region_agent_id:
+        type: integer
+        description: Région du point de service ; -1 si hors agent.
+        references: dim_region.region_id
+      date_id: {type: integer, description: Jour au format AAAAMMJJ, references: dim_date.date_id}
+      txn_ts: {type: timestamptz, description: Horodatage de la transaction}
+      type:
+        type: text
+        description: Type de transaction
+        values: [depot, retrait, transfert, paiement]
+      montant_xof: {type: "numeric(14,0)", description: "Montant en FCFA (XOF), sans décimales, strictement positif", unit: xof}
+      frais_xof: {type: "numeric(12,0)", description: "Frais en FCFA, positifs ou nuls et au plus égaux au montant", unit: xof}
+      statut:
+        type: text
+        description: Statut de la transaction
+        values: [reussie, echouee]
+  dim_client:
+    grain: un client
+    columns:
+      client_id: {type: integer, key: primary}
+      date_inscription: {type: date}
+      region_client_id: {type: integer, references: dim_region.region_id}
+      segment: {type: text, values: [particulier, commercant, entreprise]}
+  dim_agent:
+    grain: un point de service
+    description: La ligne -1 « Hors agent » représente les transactions sans point de service.
+    columns:
+      agent_id: {type: integer, key: primary}
+      nom: {type: text, free_text: true, description: Nom commercial (texte libre, non fiable)}
+      ville: {type: text, free_text: true}
+      region_agent_id: {type: integer, references: dim_region.region_id}
+      date_activation: {type: date}
+      statut_agent:
+        type: text
+        values: [ouvert, ferme]
+        description: Statut administratif. Différent de « agent actif » (voir glossaire).
+  dim_region:
+    grain: une région
+    description: La ligne -1 « Non applicable » sert aux transactions hors agent.
+    columns:
+      region_id: {type: integer, key: primary}
+      region: {type: text}
+      pays: {type: text}
+  dim_date:
+    grain: un jour
+    columns:
+      date_id: {type: integer, key: primary, description: AAAAMMJJ}
+      date: {type: date}
+      jour_semaine: {type: smallint, description: "1 = lundi … 7 = dimanche (ISO)"}
+      semaine_iso: {type: smallint, description: "Semaine ISO 8601 (1-53). Toujours regrouper avec annee_iso, jamais avec annee"}
+      annee_iso:
+        type: smallint
+        description: "Année ISO 8601 de la semaine, à utiliser avec semaine_iso : (annee_iso, semaine_iso). Diffère de annee autour du 1er janvier (29/12/2025 = semaine 1 de 2026)"
+      mois: {type: smallint}
+      nom_mois: {type: text}
+      trimestre: {type: smallint}
+      annee: {type: smallint}
+      est_weekend: {type: boolean}
+      jour_ferie: {type: boolean}
+      debut_mois: {type: date}
+      fin_mois: {type: date}

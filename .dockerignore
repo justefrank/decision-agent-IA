@@ -1,0 +1,23 @@
+# Contexte de construction de infra/api.Dockerfile (racine du dépôt) : seulement ce que l'image copie.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/tests
+var/
+infra/secrets
+frontend/node_modules
+web/node_modules
+warehouse/target
+warehouse/logs
+warehouse/dbt_packages
+eval/reports
+docs

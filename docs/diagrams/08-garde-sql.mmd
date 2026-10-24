@@ -1,13 +1,19 @@
 flowchart TD
-  S["SQL proposé par l'agent"] --> P{"Un seul SELECT ?"}
-  P -- non --> X["Refus (status = blocked)"]
-  P -- oui --> T{"Tables autorisées, qualifiées ?"}
+  S["SQL proposé (run_query) ou compilé (query_metric)"] --> B{"Longueur et profondeur<br/>d'AST bornées ?"}
+  B -- non --> X["Refus actionnable (status = blocked)"]
+  B -- oui --> P{"Un seul SELECT ?"}
+  P -- non --> X
+  P -- oui --> N{"Types de nœuds<br/>dans la liste blanche ?"}
+  N -- non --> X
+  N -- oui --> T{"Tables analytics.* autorisées ?"}
   T -- non --> X
-  T -- oui --> F{"Fonctions dans la liste fermée ?"}
+  T -- oui --> F{"Fonctions (noms normalisés)<br/>dans la liste fermée ?"}
   F -- non --> X
-  F -- oui --> LI["LIMIT imposé sur l'AST"]
-  LI --> E{"EXPLAIN : coût et jointures bornés ?"}
+  F -- oui --> SC["Portée extraite de l'AST<br/>et règles de cohérence sémantique"]
+  SC -- "écart avec declared_scope" --> WN["Avertissement actionnable (semantic_warning)"]
+  SC --> LI["LIMIT imposé (1 001)"]
+  LI --> R["Réécriture du SQL depuis l'AST validé"]
+  R --> E{"EXPLAIN : coût sous max_plan_cost ?"}
   E -- non --> X
-  E -- oui --> R["Réécriture du SQL depuis l'AST validé"]
-  R --> DB[("Postgres, rôle agent_ro, lecture seule, 10 s")]
-  DB --> N["Erreurs normalisées, résultats lus en flux"]
+  E -- oui --> DB[("Postgres : BEGIN READ ONLY,<br/>agent_ro, statement_timeout ≤ délai")]
+  DB --> NR["ToolResult : sql, rows, truncated,<br/>erreurs normalisées"]

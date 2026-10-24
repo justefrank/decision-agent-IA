@@ -1,0 +1,13 @@
+[project]
+name = "decision-sql-guard"
+version = "0.5.0"
+description = "Garde SQL par liste blanche sur l'AST sqlglot (dialecte postgres) et règles de cohérence sémantique."
+requires-python = ">=3.12"
+dependencies = ["decision-core", "sqlglot~=30.24"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decision_sql_guard"]

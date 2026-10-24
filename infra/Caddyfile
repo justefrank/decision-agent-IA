@@ -1,0 +1,88 @@
+# Proxy de même origine (D5) : / SPA statique, /api/* → API, /auth/* → Keycloak (sous-ensemble public).
+# TLS par l'autorité interne de Caddy (certificat local ; importer la racine de
+# /data/caddy/pki/authorities/local/root.crt dans le navigateur pour éviter l'alerte).
+{
+	admin off
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# API : corps borné à 64 Kio avant de joindre l'API (l'API applique aussi sa propre limite, 413).
+	# Pas de compression ici : elle mettrait en tampon le flux SSE (text/event-stream) et les réponses
+	# JSON sont petites. Pas de mise en tampon de la réponse (flush_interval -1).
+	handle /api/* {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# Keycloak (http-relative-path=/auth) : seulement le realm « decision » (connexion, OIDC, compte),
+	# les ressources statiques des thèmes et l'adaptateur JS. Keycloak pose sa CSP sur ses pages.
+	handle /auth/realms/decision/* {
+		encode zstd gzip
+		reverse_proxy keycloak:8080
+	}
+	handle /auth/resources/* {
+		encode zstd gzip
+		reverse_proxy keycloak:8080
+	}
+	handle /auth/js/* {
+		encode zstd gzip
+		reverse_proxy keycloak:8080
+	}
+	# Console et API d'administration (/auth/admin…), realm master et tout le reste de /auth : 404.
+	# L'administration passe par un tunnel SSH vers le port de Keycloak publié sur 127.0.0.1 (README).
+	handle /auth/admin* {
+		respond 404
+	}
+	handle /auth/realms/master* {
+		respond 404
+	}
+	handle /auth* {
+		respond 404
+	}
+
+	# SPA compilée (WEB_DIST monté sur /srv/web) : CSP stricte (aucun script en ligne, appels API et
+	# Keycloak sur la même origine, iframe de keycloak-js pour le silent check-sso).
+	@spa file {
+		root /srv/web
+		try_files /index.html
+	}
+	handle @spa {
+		encode zstd gzip
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+			X-Frame-Options "DENY"
+		}
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	# SPA non construite (pas de /srv/web/index.html) : page d'attente statique, 503.
+	handle {
+		header {
+			Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+			X-Frame-Options "DENY"
+			Cache-Control "no-store"
+			Retry-After "300"
+		}
+		root * /srv/fallback
+		rewrite * /index.html
+		file_server {
+			status 503
+		}
+	}
+}

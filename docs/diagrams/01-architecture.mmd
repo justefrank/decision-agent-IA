@@ -1,25 +1,38 @@
 flowchart LR
-  subgraph Client
-    UI["Web React + Vite"]
+  subgraph Navigateur
+    SPA["SPA Vite + React<br/>(jeton en mémoire)"]
   end
-  KC["Keycloak OIDC"]
-  subgraph API["API FastAPI (un processus)"]
-    R["Routes + auth JWT"]
-    AG["Agent"]
-    MCP["Serveur MCP (sous-processus stdio)"]
+  subgraph Edge["Proxy Caddy (TLS, même origine)"]
+    P1["/ : fichiers statiques"]
+    P2["/api : API"]
+    P3["/auth : Keycloak"]
   end
-  subgraph PG["Postgres 16"]
-    RAW["schéma raw"]
-    ANA["schéma analytics"]
-    APP["schéma app"]
+  KC["Keycloak 26.x<br/>(thème connexion + OTP, événements)"]
+  subgraph API["API FastAPI (un worker)"]
+    R["Routes /api, JWT (iss, aud, exp, RS256, kid), quota"]
+    AG["Agent (SDK anthropic)<br/>boucle, faits, validateur"]
+    AN["Analyse du tableau de bord<br/>(workflow, sans outil)"]
+    MC["Client MCP v2"]
   end
-  GEN["Générateur Python"] --> RAW
-  RAW -- "dbt (dbt_owner)" --> ANA
-  UI -- "Code + PKCE" --> KC
-  UI -- "Bearer JWT, fetch + flux" --> R
-  R -- JWKS --> KC
+  MCP["Sous-processus MCPServer (stdio)<br/>garde SQL, query_metric, run_query, describe_schema<br/>seul détenteur du DSN agent_ro"]
+  subgraph PG["Postgres 17"]
+    W[("base warehouse<br/>raw / analytics / app")]
+    K[("base keycloak")]
+  end
+  LLM["API Claude"]
+  GEN["Générateur + dbt (dbt_owner)"]
+  SPA --> Edge
+  P3 --> KC
+  P2 --> R
   R --> AG
-  AG -- outils --> MCP
-  MCP -- "agent_ro (lecture)" --> ANA
-  R -- "app_rw" --> APP
-  AG <--> LLM["API LLM externe"]
+  R --> AN
+  AG <--> LLM
+  AN <--> LLM
+  AG --> MC
+  AN --> MC
+  MC -- stdio --> MCP
+  MCP -- "agent_ro, BEGIN READ ONLY" --> W
+  R -- "app_rw" --> W
+  R -- JWKS --> KC
+  KC --> K
+  GEN --> W

@@ -74,15 +74,17 @@ Chiffres tabulaires pour tout nombre. Montants en FCFA, espace insécable, virgu
 | Back-office | En-tête de page (titre, description, actions), cartes, statistiques, segments, badges (icône + texte), interrupteurs (`role="switch"`), tiroir latéral, boîte de confirmation, barre d'enregistrement qui apparaît avec les modifications, diff `-` / `+`, toast permanent annoncé | Classes partagées `ad-`, une seule coque |
 | Analyse | Bloc « Analyse de l'agent de données » : phrase d'accroche écrite en direct, 3 constats avec étiquette, texte et niveau de confiance | Hypothèse toujours étiquetée |
 
-## 5. Écrans (45)
+## 5. Écrans
 
-| Groupe | Écrans |
+La maquette garde ses 45 écrans de référence (prototype, A01-A10, U01-U18, M1-M3, B01-B13). Le **MVP v5 en retient 22** ([SRS](../SRS.md) ENF12, détail et sort des autres écrans dans [FEATURES_RESOURCES §2](FEATURES_RESOURCES.md#2-écrans-mvp-22)). Tous sont responsive de 320 à 1440 px.
+
+| Groupe | Écrans MVP |
 |---|---|
-| Prototype | App : tous les écrans reliés, bouton « Démo : états » |
-| Authentification (A01 à A10) | Connexion, mot de passe oublié, message envoyé, nouveau mot de passe, vérification en deux étapes, compte verrouillé, première connexion, session expirée, déconnecté, connexion réussie |
-| Application (U01 à U18) | Accueil, calcul en cours, réponse avec courbe, précision demandée, classement, répartition, tableau tronqué, résultat vide, refus hors périmètre, refus de modification, panne du modèle, indicateurs avec analyse, indicateurs en sombre, journal d'audit analyste, accès refusé, session expirée, réponse avec SQL, réponse en sombre |
-| Mobile (M1 à M3) | Accueil, conversation, indicateurs |
-| Back-office (B01 à B13) | Vue d'ensemble, utilisateurs, invitation, détail d'un utilisateur, catalogue de KPI, éditeur de KPI, couche sémantique, journal d'audit, détail d'un appel, sécurité, évaluation, signalements, paramètres |
+| Authentification (4) | A01 Connexion et A05 Vérification en deux étapes (thème Keycloakify) ; A08 Session expirée (avec l'avertissement de fin de session SSO) et A09 Déconnecté (SPA) |
+| Application (13) | U01 Accueil, U02 Calcul en cours, U03 Réponse avec courbe (et historique), U04 Précision demandée, U05 Classement, U06 Répartition, U07 Tableau tronqué, U08 Résultat vide, U09 Refus (hors périmètre ou modification), U11 Panne du modèle, U12 Indicateurs avec analyse, U15 Accès refusé, U17 Réponse avec SQL |
+| Back-office (5, en lecture) | B01 Exploitation et sécurité, B05 Configuration (onglets KPI, couche sémantique, paramètres), B08 Journal d'audit (détail en tiroir), B11 Évaluation, B12 Signalements |
+
+Hors MVP : A02-A04 et A07 (pages Keycloak en thème de base aux jetons), A06 (supprimé), A10, U10 (fusionné dans U09), U13 et U18 (thème sombre en option), U14, U16 (fusionné dans A08), M1-M3 (responsive), B02-B04 (console Keycloak), B06, B09 (tiroir de B08), B10 (fusionné dans B01), B07 et B13 (fusionnés dans B05).
 
 ## 6. Accessibilité (WCAG 2.2 AA)
 
@@ -104,6 +106,10 @@ React + Vite + TypeScript, organisation par fonctionnalités (`conversation`, `d
 ## 8. À valider
 
 1. **Origine des bleus** : mesurés sur des captures fournies par l'auteur, pas sur un kit de marque officiel. À confirmer avec le kit presse de Wave si le projet est présenté à Wave.
-2. Navigation restreinte du back-office pour l'analyste.
-3. Rendu réel des photos en bichromie (lisibilité du texte sur l'image), des animations d'accueil et de la version mobile, jamais encore vus dans un navigateur.
-4. Choix des segments de l'évaluation en thème clair (mélange de couleurs à vérifier visuellement).
+2. **Vue B05 en onglets** (KPI, couche sémantique, paramètres, en lecture, avec la `semantic_version` et un lien vers la PR Git) : à dessiner ; la maquette ne montre que les éditeurs v4.
+3. **Vue B01 fusionnée** (exploitation et sécurité : latence, coût, taux de cache, blocages du garde, santé MCP, bouton « test de droits ») : à dessiner à partir de B01 et B10.
+4. **Navigation restreinte de l'analyste** : fixée par le SRS §3 (B05 sans l'onglet paramètres, B08, B11, B12) ; reste à dessiner.
+5. **Écrans fusionnés** : U09 (deux variantes de refus) et A08 (avertissement de fin de session SSO, puis session expirée) à reprendre sur la maquette.
+6. **Pages Keycloak en thème de base** (mot de passe oublié, réinitialisation, première connexion) : vérifier que les jetons suffisent à un rendu cohérent et accessible.
+7. Rendu réel des photos en bichromie (lisibilité du texte sur l'image), des animations d'accueil et du responsive à 320 px, jamais encore vus dans un navigateur.
+8. Choix des segments de l'évaluation en thème clair (mélange de couleurs à vérifier visuellement) ; affichage de pass^3 et pass@1 avec leurs intervalles.

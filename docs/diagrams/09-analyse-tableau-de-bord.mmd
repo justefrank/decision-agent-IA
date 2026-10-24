@@ -1,20 +1,25 @@
 sequenceDiagram
   actor D as Décideur
-  participant W as Web React
+  participant W as SPA
   participant A as API
-  participant G as Agent (mode analyse)
+  participant C as Code (decision_agent.dashboard)
   participant M as MCP
+  participant L as Claude
   D->>W: choisit période et région
-  W->>A: GET /dashboard
-  A->>M: get_kpi x 6 (période courante et précédente)
-  M-->>A: valeurs
+  W->>A: GET /api/dashboard?period=&region=
+  A->>C: fetch_dashboard
+  C->>M: query_metric (6 KPI, compare_to previous_period, national et par région)
+  M-->>C: ToolResult
+  C-->>A: tuiles et dérivés
   A-->>W: tuiles des KPI
-  W->>A: POST /dashboard/analysis
-  A->>G: valeurs + dérivés calculés par le code
-  Note over G: outil unique get_kpi, pas de SQL libre
-  G-->>A: lead, constats (3 max), questions
-  A->>A: validateur : chaque nombre a une source
-  A->>A: enregistre app.analysis (version sémantique)
+  W->>A: POST /api/dashboard/analysis
+  A->>C: run_dashboard_analysis
+  C->>C: constats candidats, confiance calculée, ordre déterministe
+  C->>L: un appel, sortie structurée, aucun outil
+  L-->>C: lead, 3 constats max (références f et d), questions
+  C->>C: validateur (références, littéraux, causalité hors hypothèse)
+  C-->>A: DashboardAnalysis (available)
+  A->>A: écrit app.analysis (semantic_version, model_served)
   A-->>W: constats avec confiance élevée, moyenne ou hypothèse
   D->>W: clique une question d'approfondissement
-  W->>A: ouvre une conversation pré-remplie
+  W->>A: ouvre une conversation pré-remplie (flux normal)

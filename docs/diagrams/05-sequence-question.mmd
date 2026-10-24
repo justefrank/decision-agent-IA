@@ -1,20 +1,27 @@
 sequenceDiagram
-  participant W as Web React
-  participant A as API
+  participant W as SPA
+  participant A as API (via proxy /api)
   participant G as Agent
+  participant L as Claude
   participant M as MCP (stdio)
   participant D as Postgres
-  W->>A: POST /conversations/{id}/messages (Bearer)
+  W->>A: POST /api/conversations/{id}/messages (Bearer)
   A->>A: JWT, rôle, propriété (user_id = sub), quota
-  A->>G: question + état résolu + 6 derniers échanges
-  loop boucle d'outils (6 étapes max, 30 s)
-    G->>M: get_kpi / describe_table / run_query
-    M->>M: garde SQL (AST, liste blanche), EXPLAIN borné
-    M->>D: SELECT (agent_ro, 10 s)
-    D-->>M: lignes (1 001 max)
-    M-->>G: lignes, durée, truncated
-    A->>A: écrit query_log (étape, tentative)
+  A->>G: question, état résolu, 6 derniers échanges
+  loop 6 appels LLM max, 8 outils max, 30 s
+    G->>L: messages.stream (tool_choice auto, outils strict)
+    L-->>G: tool_use de données
+    G->>M: query_metric, run_query ou describe_schema (délai restant)
+    M->>M: garde SQL, EXPLAIN borné
+    M->>D: BEGIN READ ONLY puis SELECT (agent_ro)
+    D-->>M: 1 001 lignes max
+    M-->>G: ToolResult (sql réécrit, rows, duration_ms, truncated)
+    G-->>A: QueryLogRecord (outil et LLM)
+    A->>A: écrit query_log
+    A-->>W: SSE step
   end
-  G-->>A: AssistantMessage (validé)
-  A->>A: retire le SQL si rôle décideur
-  A-->>W: événements d'étape puis message final
+  L-->>G: outil terminal (submit_answer, ask_clarification ou refuse)
+  G->>G: registre de faits, validateur, formateur (ou réponse gabarit)
+  G-->>A: AssistantMessage
+  A->>A: for_role : retire sql pour le décideur, écrit message
+  A-->>W: SSE final (ou error)

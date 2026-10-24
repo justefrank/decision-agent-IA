@@ -1,19 +1,22 @@
 sequenceDiagram
   actor U as Utilisateur
-  participant W as Web React
-  participant K as Keycloak
-  participant A as API
+  participant W as SPA
+  participant K as Keycloak (via proxy /auth)
+  participant A as API (via proxy /api)
   U->>W: ouvre l'application
-  W->>K: redirection Authorization Code + PKCE
-  K->>U: page de connexion (SSO ou e-mail + mot de passe)
-  U->>K: identifiants
-  K->>U: second facteur (MFA)
-  U->>K: code
+  W->>K: redirection Authorization Code + PKCE (S256)
+  K->>U: page de connexion (thème Keycloakify)
+  U->>K: e-mail et mot de passe
+  alt rôle analyste ou admin
+    K->>U: vérification en deux étapes (OTP)
+    U->>K: code
+  end
+  Note over K: force brute : verrouillage temporaire, message neutre, événement enregistré
   K-->>W: code d'autorisation
   W->>K: échange code + verifier
-  K-->>W: jeton d'accès (5 min, en mémoire)
+  K-->>W: jeton d'accès 5 min (aud = decision-api), en mémoire
   W->>A: requête avec Bearer
   A->>K: JWKS (en cache)
-  A->>A: vérifie iss, aud, exp, RS256, rôle
+  A->>A: vérifie iss, aud, exp, nbf, RS256, kid, rôles du client decision-web
   A-->>W: réponse
-  Note over W,A: 20 s avant l'expiration, avertissement et prolongation
+  Note over W,K: jeton renouvelé en silence, avertissement avant la fin de la session SSO avec prolongation

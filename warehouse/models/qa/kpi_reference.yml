@@ -1,0 +1,76 @@
+version: 2
+
+models:
+  - name: kpi_reference
+    description: >
+      Contrôle des 6 KPI (définitions de semantic/kpis.yaml). Figé par les tests unitaires
+      ci-dessous ; toute modification d'une définition doit mettre à jour ces attentes.
+
+unit_tests:
+  - name: kpi_six_definitions_periode_explicite
+    description: >
+      Septembre 2026. Volume, valeur et frais ne comptent que les réussies ; clients et agents
+      actifs = au moins une réussie, agent -1 exclu ; taux d'échec = échouées / toutes.
+    model: kpi_reference
+    overrides:
+      vars: {kpi_debut: "2026-09-01", kpi_fin: "2026-09-30"}
+    given:
+      - input: ref('fact_transaction')
+        rows:
+          - {transaction_id: 1, client_id: 1, agent_id: 10, date_id: 20260901, montant_xof: 10000, frais_xof: 100, statut: reussie}
+          - {transaction_id: 2, client_id: 1, agent_id: 10, date_id: 20260915, montant_xof: 5000, frais_xof: 0, statut: reussie}
+          - {transaction_id: 3, client_id: 2, agent_id: -1, date_id: 20260920, montant_xof: 2000, frais_xof: 20, statut: reussie}
+          - {transaction_id: 4, client_id: 3, agent_id: 11, date_id: 20260930, montant_xof: 7000, frais_xof: 0, statut: echouee}
+          - {transaction_id: 5, client_id: 4, agent_id: 12, date_id: 20260831, montant_xof: 99999, frais_xof: 999, statut: reussie}
+          - {transaction_id: 6, client_id: 2, agent_id: 11, date_id: 20260910, montant_xof: 3000, frais_xof: 0, statut: echouee}
+      - input: ref('dim_date')
+        rows:
+          - {date_id: 20260831, date: "2026-08-31"}
+          - {date_id: 20260901, date: "2026-09-01"}
+          - {date_id: 20260910, date: "2026-09-10"}
+          - {date_id: 20260915, date: "2026-09-15"}
+          - {date_id: 20260920, date: "2026-09-20"}
+          - {date_id: 20260930, date: "2026-09-30"}
+    expect:
+      rows:
+        - {volume_transactions: 3, valeur_transferee: 17000, revenus_frais: 120, clients_actifs: 2, agents_actifs: 1, taux_echec: "0.40000000000000000000"}
+
+  - name: kpi_actifs_30_derniers_jours_par_defaut
+    description: >
+      Sans période : ]REFERENCE_DATE - 30 j, REFERENCE_DATE] = 2026-09-01 → 2026-09-30 ;
+      le 31 août est exclu, l'échouée hors agent compte au dénominateur du taux d'échec.
+    model: kpi_reference
+    overrides:
+      vars: {reference_date: "2026-09-30"}
+    given:
+      - input: ref('fact_transaction')
+        rows:
+          - {transaction_id: 1, client_id: 5, agent_id: 20, date_id: 20260831, montant_xof: 1000, frais_xof: 10, statut: reussie}
+          - {transaction_id: 2, client_id: 6, agent_id: 21, date_id: 20260901, montant_xof: 2000, frais_xof: 20, statut: reussie}
+          - {transaction_id: 3, client_id: 6, agent_id: 21, date_id: 20260930, montant_xof: 3000, frais_xof: 30, statut: reussie}
+          - {transaction_id: 4, client_id: 7, agent_id: -1, date_id: 20260930, montant_xof: 500, frais_xof: 0, statut: echouee}
+          - {transaction_id: 5, client_id: 8, agent_id: -1, date_id: 20260930, montant_xof: 800, frais_xof: 8, statut: reussie}
+      - input: ref('dim_date')
+        rows:
+          - {date_id: 20260831, date: "2026-08-31"}
+          - {date_id: 20260901, date: "2026-09-01"}
+          - {date_id: 20260930, date: "2026-09-30"}
+    expect:
+      rows:
+        - {volume_transactions: 3, valeur_transferee: 5800, revenus_frais: 58, clients_actifs: 2, agents_actifs: 1, taux_echec: "0.25000000000000000000"}
+
+  - name: kpi_periode_vide
+    description: Aucune transaction dans la période → zéros et taux d'échec NULL (pas de division par zéro).
+    model: kpi_reference
+    overrides:
+      vars: {kpi_debut: "2026-07-01", kpi_fin: "2026-07-31"}
+    given:
+      - input: ref('fact_transaction')
+        rows:
+          - {transaction_id: 1, client_id: 1, agent_id: 10, date_id: 20260901, montant_xof: 10000, frais_xof: 100, statut: echouee}
+      - input: ref('dim_date')
+        rows:
+          - {date_id: 20260901, date: "2026-09-01"}
+    expect:
+      rows:
+        - {volume_transactions: 0, valeur_transferee: 0, revenus_frais: 0, clients_actifs: 0, agents_actifs: 0, taux_echec: null}

@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Projet
+.venv/
+warehouse/target/
+warehouse/logs/
+warehouse/dbt_packages/
+eval/reports/*.json
+!eval/reports/.gitkeep

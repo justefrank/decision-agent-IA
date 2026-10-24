@@ -1,0 +1,238 @@
+# Jeu de SUIVI DE CONVERSATION (RF5 + RF14) : ~12 scripts multi-tours.
+#   Variante A : historique écrit à l'avance (isole la compétence de suivi).
+#   Variante B : bout en bout (chaque tour est joué par l'agent ; l'historique est sa propre sortie).
+#   Variante C : l'agent doit demander une clarification, puis l'utilisateur répond (réponse scriptée).
+# Le dernier tour est la question évaluée (critères complets) ; un tour intermédiaire joué peut porter
+# `expected_kind` (échec du script s'il n'est pas respecté).
+split: followup
+reference_date: 2026-09-30
+items:
+  # ---------------------------------------------------------------- Variante A (5)
+  - id: F01
+    category: suivi
+    variant: A
+    trap: heritage_kpi
+    turns:
+      - question: Quels sont les revenus de frais en juillet 2026 ?
+        answer:
+          text: "Revenus de frais en juillet 2026 : {v0} FCFA."
+          reference_sql: |
+            SELECT COALESCE(SUM(f.frais_xof), 0) FROM analytics.fact_transaction f
+            WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260701 AND 20260731
+          resolved_state:
+            metrics: {value: [revenus_frais], source: explicite}
+            period: {value: {start: 2026-07-01, end: 2026-07-31, label: juillet 2026}, source: explicite}
+            certified: true
+      - question: Et au mois d'août ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COALESCE(SUM(f.frais_xof), 0) AS frais FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260801 AND 20260831
+    expected_period: {start: 2026-08-01, end: 2026-08-31}
+    expected_scope: {filters: {}}
+
+  - id: F02
+    category: suivi
+    variant: A
+    trap: changement_kpi
+    turns:
+      - question: Quel est le volume de transactions au deuxième trimestre 2026 ?
+        answer:
+          text: "Volume de transactions réussies au deuxième trimestre 2026 : {v0}."
+          reference_sql: |
+            SELECT COUNT(*) FROM analytics.fact_transaction f
+            WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260401 AND 20260630
+          resolved_state:
+            metrics: {value: [volume_transactions], source: explicite}
+            period: {value: {start: 2026-04-01, end: 2026-06-30, label: deuxième trimestre 2026}, source: explicite}
+            certified: true
+      - question: Et la valeur transférée sur la même période ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COALESCE(SUM(f.montant_xof), 0) AS valeur FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260401 AND 20260630
+    expected_period: {start: 2026-04-01, end: 2026-06-30}
+    expected_scope: {filters: {}}
+
+  - id: F03
+    category: suivi
+    variant: A
+    trap: decoupage
+    turns:
+      - question: Combien de clients actifs en août 2026 ?
+        answer:
+          text: "Clients actifs en août 2026 : {v0}."
+          reference_sql: |
+            SELECT COUNT(DISTINCT f.client_id) FROM analytics.fact_transaction f
+            WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260801 AND 20260831
+          resolved_state:
+            metrics: {value: [clients_actifs], source: explicite}
+            period: {value: {start: 2026-08-01, end: 2026-08-31, label: août 2026}, source: explicite}
+            certified: true
+      - question: Répartis-les par segment.
+    expected_kind: answer
+    reference_sql: |
+      SELECT c.segment, COUNT(DISTINCT f.client_id) AS clients
+      FROM analytics.fact_transaction f JOIN analytics.dim_client c ON c.client_id = f.client_id
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260801 AND 20260831
+      GROUP BY c.segment
+    expected_period: {start: 2026-08-01, end: 2026-08-31}
+    expected_scope: {filters: {}}
+
+  - id: F04
+    category: suivi
+    variant: A
+    trap: comparaison_heritee
+    turns:
+      - question: Quel est le taux d'échec en septembre 2026 ?
+        answer:
+          text: "Taux d'échec en septembre 2026 : {v0}."
+          reference_sql: |
+            SELECT COUNT(*) FILTER (WHERE f.statut = 'echouee')::numeric / NULLIF(COUNT(*), 0)
+            FROM analytics.fact_transaction f WHERE f.date_id BETWEEN 20260901 AND 20260930
+          resolved_state:
+            metrics: {value: [taux_echec], source: explicite}
+            period: {value: {start: 2026-09-01, end: 2026-09-30, label: septembre 2026}, source: explicite}
+            certified: true
+      - question: C'est mieux ou moins bien que le mois précédent ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COUNT(*) FILTER (WHERE f.statut = 'echouee' AND f.date_id >= 20260901)::numeric
+               / NULLIF(COUNT(*) FILTER (WHERE f.date_id >= 20260901), 0) AS septembre,
+             COUNT(*) FILTER (WHERE f.statut = 'echouee' AND f.date_id < 20260901)::numeric
+               / NULLIF(COUNT(*) FILTER (WHERE f.date_id < 20260901), 0) AS aout
+      FROM analytics.fact_transaction f WHERE f.date_id BETWEEN 20260801 AND 20260930
+    expected_period: {start: 2026-09-01, end: 2026-09-30}
+    expected_scope: {filters: {}}
+
+  - id: F05
+    category: suivi
+    variant: A
+    trap: retrait_filtre
+    turns:
+      - question: Quelle est la valeur des dépôts à Dakar (points de service) en août 2026 ?
+        answer:
+          text: "Valeur des dépôts réussis (région du point de service : Dakar) en août 2026 : {v0} FCFA."
+          reference_sql: |
+            SELECT COALESCE(SUM(f.montant_xof), 0) FROM analytics.fact_transaction f
+            JOIN analytics.dim_region ra ON ra.region_id = f.region_agent_id
+            WHERE f.statut = 'reussie' AND f.type = 'depot' AND ra.region = 'Dakar'
+              AND f.date_id BETWEEN 20260801 AND 20260831
+          resolved_state:
+            metrics: {value: [valeur_transferee], source: explicite}
+            period: {value: {start: 2026-08-01, end: 2026-08-31, label: août 2026}, source: explicite}
+            region_kind: {value: region_agent, source: explicite}
+            scope: {value: {region_kind: region_agent, filters: [{dimension: region_agent, values: [Dakar]}, {dimension: type, values: [depot]}]}, source: explicite}
+            certified: true
+      - question: Et sur tout le pays ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COALESCE(SUM(f.montant_xof), 0) AS valeur FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.type = 'depot' AND f.date_id BETWEEN 20260801 AND 20260831
+    expected_period: {start: 2026-08-01, end: 2026-08-31}
+    expected_scope: {filters: {type: [depot]}}
+
+  # ---------------------------------------------------------------- Variante B (4)
+  - id: F06
+    category: suivi
+    variant: B
+    trap: heritage_kpi
+    turns:
+      - {question: "Quel est le volume de transactions en mai 2026 ?", expected_kind: answer}
+      - question: Et en juin ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COUNT(*) AS volume FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260601 AND 20260630
+    expected_period: {start: 2026-06-01, end: 2026-06-30}
+    expected_scope: {filters: {}}
+
+  - id: F07
+    category: suivi
+    variant: B
+    trap: heritage_periode
+    turns:
+      - {question: "Quels sont les revenus de frais au premier trimestre 2026 ?", expected_kind: answer}
+      - question: Uniquement pour les retraits.
+    expected_kind: answer
+    reference_sql: |
+      SELECT COALESCE(SUM(f.frais_xof), 0) AS frais FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.type = 'retrait' AND f.date_id BETWEEN 20260101 AND 20260331
+    expected_period: {start: 2026-01-01, end: 2026-03-31}
+    expected_scope: {filters: {type: [retrait]}}
+
+  - id: F08
+    category: suivi
+    variant: B
+    trap: classement_puis_detail
+    turns:
+      - {question: "Quelles sont les 3 régions de clients avec le plus de clients actifs en septembre 2026 ?", expected_kind: answer}
+      - question: Et quel est le total national sur ce mois ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COUNT(DISTINCT f.client_id) AS clients FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260901 AND 20260930
+    expected_period: {start: 2026-09-01, end: 2026-09-30}
+    expected_scope: {filters: {}}
+
+  - id: F09
+    category: suivi
+    variant: B
+    trap: trois_tours
+    turns:
+      - {question: "Quelle est la valeur transférée en mars 2026 ?", expected_kind: answer}
+      - {question: "Et en avril ?", expected_kind: answer}
+      - question: Et pour les seuls transferts, sur ce même mois ?
+    expected_kind: answer
+    reference_sql: |
+      SELECT COALESCE(SUM(f.montant_xof), 0) AS valeur FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.type = 'transfert' AND f.date_id BETWEEN 20260401 AND 20260430
+    expected_period: {start: 2026-04-01, end: 2026-04-30}
+    expected_scope: {filters: {type: [transfert]}}
+
+  # ---------------------------------------------------------------- Variante C (3)
+  - id: F10
+    category: suivi
+    variant: C
+    trap: sens_region
+    turns:
+      - {question: "Quelle est la valeur transférée par région en juin 2026 ?", expected_kind: clarification}
+      - question: Région du point de service.
+    expected_kind: answer
+    reference_sql: |
+      SELECT ra.region, COALESCE(SUM(f.montant_xof), 0) AS valeur
+      FROM analytics.fact_transaction f JOIN analytics.dim_region ra ON ra.region_id = f.region_agent_id
+      WHERE f.statut = 'reussie' AND f.region_agent_id <> -1 AND f.date_id BETWEEN 20260601 AND 20260630
+      GROUP BY ra.region
+    expected_period: {start: 2026-06-01, end: 2026-06-30}
+    expected_scope: {region_kind: region_agent, filters: {}}
+    notes: "La ligne « Non applicable » (hors agent) est exclue de la référence."
+
+  - id: F11
+    category: suivi
+    variant: C
+    trap: kpi_manquant
+    turns:
+      - {question: "Comment s'est passé le mois d'août 2026 ?", expected_kind: clarification}
+      - question: Le volume de transactions.
+    expected_kind: answer
+    reference_sql: |
+      SELECT COUNT(*) AS volume FROM analytics.fact_transaction f
+      WHERE f.statut = 'reussie' AND f.date_id BETWEEN 20260801 AND 20260831
+    expected_period: {start: 2026-08-01, end: 2026-08-31}
+    expected_scope: {filters: {}}
+
+  - id: F12
+    category: suivi
+    variant: C
+    trap: sens_region_numero
+    turns:
+      - {question: "Quel est le volume de transactions à Fatick en septembre 2026 ?", expected_kind: clarification}
+      - question: Celle des clients.
+    expected_kind: answer
+    reference_sql: |
+      SELECT COUNT(*) AS volume FROM analytics.fact_transaction f
+      JOIN analytics.dim_region rc ON rc.region_id = f.region_client_id
+      WHERE f.statut = 'reussie' AND rc.region = 'Fatick' AND f.date_id BETWEEN 20260901 AND 20260930
+    expected_period: {start: 2026-09-01, end: 2026-09-30}
+    expected_scope: {region_kind: region_client, filters: {region_client: [Fatick]}}
