@@ -83,14 +83,37 @@ make seed SCALE=1.0 && make eval                              # jeu de test : é
 en ≈ 35 s (génération + COPY ≈ 11 s, dbt build ≈ 20 s). Une même graine donne les mêmes données ;
 le `data_hash` imprimé est enregistré dans `raw.raw_meta` et dans les campagnes d'évaluation.
 
-## Déploiement (compose)
+## Démarrage en conteneurs (Docker sur votre machine)
+
+Mêmes commandes que le mode local, préfixées `dc-` : elles s'exécutent dans le conteneur « outils »
+(`infra/tools.Dockerfile` : Python, uv, dbt, make, psql), sur le réseau Docker, avec les mots de passe
+des secrets. Le dépôt est monté dans ce conteneur : vos modifications de code sont prises en compte
+sans reconstruire. Seul Docker (avec Compose v2) est nécessaire sur la machine.
 
 ```bash
-make secrets                       # infra/secrets/*.txt aléatoires ; remplir anthropic_api_key.txt
-make compose-up                    # https://localhost (certificat de l'autorité interne Caddy)
-make seed PG_PORT=5432 DBT_PG_PASSWORD="$(cat infra/secrets/dbt_owner_password.txt)"
-make rights-test PG_PORT=5432 …    # rapport var/reports/rights-test.json, lu par l'API (monté en lecture)
+make dc-init                         # secrets + pile + données factices (0,05) + test de droits
+make dc-admin EMAIL=prenom.nom@exemple.sn   # administrateur Keycloak (mot de passe temporaire affiché)
+make ps                              # état des services ; make logs S=api pour les journaux
 ```
+
+| Besoin | Commande |
+|---|---|
+| Lancer / arrêter la pile | `make up` / `make down` (les données restent dans le volume `pgdata`) |
+| API de développement sans interface | `make dev-up` puis `make dc-token ROLE=admin` : API sur `http://127.0.0.1:8000/api/docs`, jetons locaux acceptés, MFA non exigée |
+| Données à l'échelle de l'évaluation | `make dc-seed SCALE=1.0` |
+| Évaluer avec Claude | clé dans `infra/secrets/anthropic_api_key.txt`, `make restart S=api` (l'API lit ses secrets au démarrage), puis `make dc-eval SPLIT=dev PASSES=1` ; jeu de test : `make dc-eval` (échelle 1.0 exigée) |
+| Utilisateur Keycloak | `make dc-user EMAIL=... ROLE=decideur` |
+| Shell outils | `make dc-shell` (make, uv, dbt, psql déjà configurés) |
+| Repartir de zéro | `make dc-reset` (**supprime les volumes**, donc toutes les données) |
+| Après un changement de dépendances (`uv.lock`) | `make dc-build` |
+
+- **Secrets** : `make secrets` (appelé par `make up`) crée `infra/secrets/*.txt`. Le dossier est en
+  700 ; les fichiers sont en 644, car Compose (hors Swarm) les monte tels quels et Postgres, Keycloak
+  et l'API les lisent sous des UID différents du vôtre.
+- **Production locale** (`make up`) : l'API exige des jetons Keycloak avec OTP ; la SPA n'existant pas
+  encore, utilisez `make dev-up` pour appeler l'API directement.
+- **Fichiers créés par les outils** (`var/`, `warehouse/target/`) : ils appartiennent à votre
+  utilisateur (le conteneur outils tourne avec votre UID).
 
 - **Migrations** : le service `migrate` (Alembic, rôle `app_owner`) s'exécute à chaque démarrage ;
   l'API attend sa fin (`service_completed_successfully`).
