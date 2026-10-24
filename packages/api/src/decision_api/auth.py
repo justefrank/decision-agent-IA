@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, get_args
 
 import httpx
@@ -74,14 +76,17 @@ class JWKSCache:
 
     async def _fetch(self) -> None:
         self._last_attempt = time.monotonic()
-        client = self._http or httpx.AsyncClient(timeout=self._timeout_s)
-        try:
-            resp = await client.get(self.url)
-            resp.raise_for_status()
-            data = resp.json()
-        finally:
-            if self._http is None:
-                await client.aclose()
+        if self.url.startswith("file://"):  # jeton de développement (decision_api.cli dev-token)
+            data = json.loads(Path(self.url.removeprefix("file://")).read_text(encoding="utf-8"))
+        else:
+            client = self._http or httpx.AsyncClient(timeout=self._timeout_s)
+            try:
+                resp = await client.get(self.url)
+                resp.raise_for_status()
+                data = resp.json()
+            finally:
+                if self._http is None:
+                    await client.aclose()
         keys: dict[str, Any] = {}
         for jwk in data.get("keys", []):
             if jwk.get("kty") != "RSA" or not jwk.get("kid"):
@@ -108,7 +113,7 @@ class JWKSCache:
             if expired or now - self._last_attempt >= self.refresh_min_interval_s:
                 try:
                     await self._fetch()
-                except (httpx.HTTPError, ValueError):
+                except (httpx.HTTPError, ValueError, OSError):
                     log.error("JWKS indisponible")
             return self._keys.get(kid)
 
@@ -118,6 +123,8 @@ class TokenValidator:
         self.issuer = settings.keycloak_issuer
         self.audience = settings.keycloak_audience
         self.client_id = settings.keycloak_client_id
+        if settings.jwks_url.startswith("file://") and settings.is_production:
+            raise RuntimeError("JWKS local (file://) interdit en production : utiliser Keycloak.")
         self.jwks = jwks or JWKSCache(settings.jwks_url)
         self.leeway_s = 10
 

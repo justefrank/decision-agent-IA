@@ -25,3 +25,6 @@ packages = ["src/decision_api"]
 [tool.uv.sources]
 decision-core = { workspace = true }
 decision-agent = { workspace = true }
+
+[project.scripts]
+decision-admin = "decision_api.cli:main"

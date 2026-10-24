@@ -32,7 +32,7 @@ RIGHTS_REPORT ?= var/rights-test.json
 COMPOSE := docker compose -f infra/compose.yaml
 
 .PHONY: help sync db-up db-down seed generate dbt-build dbt-run rights-test migrate api eval test \
-        lint secrets compose-up compose-down
+        lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user
 
 help: ## Liste des cibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -94,3 +94,43 @@ compose-up: secrets ## Lance la pile compose (profil dev : Mailpit)
 
 compose-down: ## Arrête la pile compose
 	$(COMPOSE) --profile dev down
+
+# --- Démarrage rapide en local (sans Docker) ------------------------------------------------------
+INIT_SCALE ?= 0.05
+ROLE ?= admin
+EMAIL ?=
+DEV_JWKS := file://$(CURDIR)/var/dev-auth/jwks.json
+
+init: ## Tout en une commande : Postgres local, données factices (INIT_SCALE), dbt, droits, migrations
+	uv sync --all-packages --frozen
+	$(MAKE) --no-print-directory db-up
+	$(MAKE) --no-print-directory seed SCALE=$(INIT_SCALE)
+	$(MAKE) --no-print-directory rights-test
+	$(MAKE) --no-print-directory migrate
+	uv run python -m decision_api.cli dev-token --role admin --quiet > /dev/null
+	@echo ""
+	@echo "Prêt. Données factices à l'échelle $(INIT_SCALE) sur le port $(PG_PORT)."
+	@echo "  make api-dev                 API locale (jetons de développement, sans Keycloak)"
+	@echo "  make dev-token ROLE=admin    jeton administrateur (ou analyste, decideur)"
+
+reset: ## Supprime le Postgres local puis relance init (données régénérées)
+	-$(MAKE) --no-print-directory db-down
+	rm -rf /tmp/decision-pg/$(PG_PORT)
+	$(MAKE) --no-print-directory init
+
+dev-token: ## Jeton JWT local signé pour ROLE (admin | analyste | decideur), sans Keycloak
+	@uv run python -m decision_api.cli dev-token --role $(ROLE)
+
+api-dev: ## API locale qui accepte les jetons de développement (make dev-token)
+	@test -f var/dev-auth/jwks.json || uv run python -m decision_api.cli dev-token --quiet > /dev/null
+	ENVIRONMENT=dev KEYCLOAK_JWKS_URL='$(DEV_JWKS)' AGENT_RO_DSN='$(AGENT_RO_DSN)' \
+	  APP_DATABASE_URL='$(APP_DATABASE_URL)' \
+	  uv run uvicorn decision_api.main:app --reload --host 127.0.0.1 --port 8000
+
+create-admin: ## Crée un administrateur dans Keycloak : make create-admin EMAIL=prenom.nom@exemple.sn
+	@test -n "$(EMAIL)" || (echo "EMAIL requis : make create-admin EMAIL=..." && exit 2)
+	uv run python -m decision_api.cli create-user --email '$(EMAIL)' --role admin
+
+create-user: ## Crée un utilisateur Keycloak : make create-user EMAIL=... ROLE=decideur|analyste|admin
+	@test -n "$(EMAIL)" || (echo "EMAIL requis" && exit 2)
+	uv run python -m decision_api.cli create-user --email '$(EMAIL)' --role $(ROLE)
