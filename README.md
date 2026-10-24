@@ -83,6 +83,22 @@ make seed SCALE=1.0 && make eval                              # jeu de test : é
 en ≈ 35 s (génération + COPY ≈ 11 s, dbt build ≈ 20 s). Une même graine donne les mêmes données ;
 le `data_hash` imprimé est enregistré dans `raw.raw_meta` et dans les campagnes d'évaluation.
 
+## Interface web (`web/`)
+
+SPA Vite + React 19 + TypeScript, servie en production par Caddy (même origine que l'API et Keycloak).
+Elle ne garde que le logo et les jetons de design de la maquette ; la présentation est celle d'un
+relevé : chaque réponse est un reçu avec son chiffre clé et sa chaîne de preuve (table, filtre, période).
+
+| Mode | Commandes | Connexion |
+|---|---|---|
+| Développement local | `make init`, `make api-dev`, puis dans un second terminal `make web-dev` → http://localhost:5173 | Trois boutons (décideur, analyste, administrateur) : jetons signés localement par la CLI de l'API, sans Keycloak |
+| Développement en conteneurs | `make dev-up`, puis `make web-dev-dc` → http://localhost:5173 | Idem, jetons signés dans le conteneur outils |
+| Pile complète (Keycloak) | `make dc-web-build` (ou `make web-build` avec Node 22), puis `make up` → https://localhost | Keycloak : Authorization Code + PKCE, jeton en mémoire, renouvellement silencieux, OTP pour analyste et admin |
+
+Avant un commit : `make web-check` (types, lint, tests). Les types de l'API sont générés depuis son
+OpenAPI et les contrats Python : `cd web && npm run api-types`. Les polices sont installées en local
+(CSP stricte, aucun appel à un CDN).
+
 ## Démarrage en conteneurs (Docker sur votre machine)
 
 Mêmes commandes que le mode local, préfixées `dc-` : elles s'exécutent dans le conteneur « outils »
@@ -117,10 +133,9 @@ make ps                              # état des services ; make logs S=api pour
 
 - **Migrations** : le service `migrate` (Alembic, rôle `app_owner`) s'exécute à chaque démarrage ;
   l'API attend sa fin (`service_completed_successfully`).
-- **Interface** : la SPA n'existe pas encore dans ce dépôt ; elle est à migrer depuis `frontend/`
-  (ancien squelette Next.js) vers une SPA Vite compilée dans `web/dist` — hors du périmètre actuel.
-  Tant que `WEB_DIST` (défaut `web/dist`) ne contient pas d'`index.html`, Caddy sert une page
-  d'attente statique (`infra/web-fallback/`, statut 503) ; l'API et Keycloak restent servis.
+- **Interface** : Caddy sert `web/dist` (`WEB_DIST`). Tant qu'il ne contient pas d'`index.html`
+  (interface non construite : `make dc-web-build`), il sert une page d'attente statique
+  (`infra/web-fallback/`, statut 503) ; l'API et Keycloak restent servis.
 - **Proxy** : `/api/*` (corps limité à 64 Kio, sans compression pour ne pas tamponner le flux SSE) ;
   de Keycloak, seuls `/auth/realms/decision/*`, `/auth/resources/*` et `/auth/js/*` sont publiés.
   `/auth/admin*`, `/auth/realms/master*` et le reste de `/auth` répondent 404.
