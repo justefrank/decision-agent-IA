@@ -33,7 +33,7 @@ Documents : [`SRS.md`](SRS.md) (exigences), [`docs/EVALUATION_V5.md`](docs/EVALU
 │   ├── keycloak/realm/        realm « decision » versionné, sans secret ni utilisateur
 │   └── secrets/               secrets Docker (non versionnés, `make secrets`)
 ├── scripts/dev_pg.sh          Postgres local jetable (sans Docker)
-├── frontend/                  ancien squelette Next.js, à migrer vers la SPA Vite web/ (D1, non faite)
+├── web/                       SPA Vite + React + TypeScript (conversation, indicateurs, back-office en lecture)
 └── Makefile                   tâches courantes (`make help`)
 ```
 

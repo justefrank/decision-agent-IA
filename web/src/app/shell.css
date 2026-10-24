@@ -1,0 +1,168 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 100dvh;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  border-radius: var(--r-sm);
+  background: var(--ink);
+  color: var(--ground);
+  font-weight: 600;
+}
+.skip-link:focus {
+  top: 1rem;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.logo-text {
+  display: grid;
+  line-height: 1.05;
+}
+.logo-text b {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: var(--brand);
+}
+:root[data-theme='dark'] .logo-text b {
+  color: var(--sky);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .logo-text b {
+    color: var(--sky);
+  }
+}
+.logo-text span {
+  font-size: var(--t-xs);
+  color: var(--soft);
+}
+
+.topbar {
+  display: none;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.4rem 0.9rem 1rem;
+  background: var(--card);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+.sidebar-brand {
+  padding: 0 0.4rem 0.4rem;
+}
+.nav-group {
+  display: grid;
+  gap: 0.25rem;
+}
+.nav-group-label {
+  padding: 0 0.6rem;
+  font-size: var(--t-xs);
+  color: var(--soft);
+  font-weight: 600;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 44px;
+  padding: 0 0.7rem;
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 500;
+}
+.nav-link:hover {
+  background: var(--chip);
+}
+.nav-link[aria-current='page'] {
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+.sidebar-foot {
+  margin-top: auto;
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.whoami {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0 0.4rem;
+  color: var(--soft);
+}
+.whoami-name {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.whoami-role {
+  font-size: var(--t-xs);
+}
+.sidebar-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.content {
+  min-width: 0;
+  padding: clamp(1.25rem, 3vw, 2.5rem) clamp(1rem, 4vw, 3.5rem) 4rem;
+}
+.content:focus {
+  outline: none;
+}
+
+@media (max-width: 860px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar {
+    position: fixed;
+    top: 57px;
+    left: 0;
+    bottom: 0;
+    height: auto;
+    width: min(20rem, 85vw);
+    z-index: 29;
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+  }
+  .shell[data-menu-open='true'] .sidebar {
+    transform: none;
+    box-shadow: 24px 0 48px -24px rgb(0 0 0 / 0.4);
+  }
+  .sidebar-brand {
+    display: none;
+  }
+}
