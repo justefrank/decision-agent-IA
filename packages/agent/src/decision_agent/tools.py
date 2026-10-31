@@ -77,9 +77,10 @@ QUERY_METRIC = {
                         "description": "AAAA-MM-JJ inclus (kind = absolute)",
                     },
                     "end": {"type": ["string", "null"], "description": "AAAA-MM-JJ inclus (kind = absolute)"},
+                    # Énumération nullable en anyOf : le mode strict de l'API refuse un `enum` combiné à
+                    # un type multiple ["string", "null"] (400 invalid_request_error).
                     "relative": {
-                        "type": ["string", "null"],
-                        "enum": [*RELATIVE_PERIODS, None],
+                        "anyOf": [{"type": "string", "enum": list(RELATIVE_PERIODS)}, {"type": "null"}],
                         "description": "Résolu par rapport à REFERENCE_DATE (kind = relative)",
                     },
                 }
@@ -137,7 +138,7 @@ DESCRIBE_SCHEMA = {
         "Le schéma est déjà dans le contexte : n'utiliser qu'en cas de doute sur une valeur."
     ),
     "strict": True,
-    "input_schema": _obj({"table": {"type": ["string", "null"], "enum": [*TABLES, None]}}),
+    "input_schema": _obj({"table": {"anyOf": [{"type": "string", "enum": list(TABLES)}, {"type": "null"}]}}),
 }
 
 SUBMIT_ANSWER = {

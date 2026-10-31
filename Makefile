@@ -57,7 +57,8 @@ db-down: ## Arrête le Postgres local
 	scripts/dev_pg.sh stop /tmp/decision-pg/$(PG_PORT)
 
 generate: ## Génère et charge raw (SCALE, SEED) ; imprime data_hash
-	uv run python -m decision_data_gen --scale $(SCALE) --seed $(SEED) --dsn '$(DBT_OWNER_DSN)'
+	@echo "decision_data_gen --scale $(SCALE) --seed $(SEED) --dsn postgresql://$(DBT_PG_USER):***@$(DBT_PG_HOST):$(DBT_PG_PORT)/$(DBT_PG_DBNAME)"
+	@uv run python -m decision_data_gen --scale $(SCALE) --seed $(SEED) --dsn '$(DBT_OWNER_DSN)'
 
 dbt-build: ## dbt build : modèles analytics + tests (données, unitaires KPI)
 	$(DBT) build $(DBT_FLAGS)
@@ -68,10 +69,12 @@ dbt-run: ## dbt run seul
 seed: generate dbt-build ## Générateur → raw → dbt build
 
 rights-test: ## Droits de agent_ro, avant puis après un second dbt run (rapport var/reports/)
-	uv run python warehouse/scripts/check_agent_ro_rights.py --dsn '$(AGENT_RO_DSN)' \
+	@echo "check_agent_ro_rights --phase avant (agent_ro@$(PG_HOST):$(PG_PORT))"
+	@uv run python warehouse/scripts/check_agent_ro_rights.py --dsn '$(AGENT_RO_DSN)' \
 	  --phase avant --report $(RIGHTS_REPORT)
 	$(DBT) run $(DBT_FLAGS)
-	uv run python warehouse/scripts/check_agent_ro_rights.py --dsn '$(AGENT_RO_DSN)' \
+	@echo "check_agent_ro_rights --phase apres_dbt_run (agent_ro@$(PG_HOST):$(PG_PORT))"
+	@uv run python warehouse/scripts/check_agent_ro_rights.py --dsn '$(AGENT_RO_DSN)' \
 	  --phase apres_dbt_run --report $(RIGHTS_REPORT) --merge
 
 migrate: ## Migrations Alembic du schéma app (rôle app_owner)
@@ -85,7 +88,8 @@ api: ## API en développement (uvicorn, rechargement)
 
 SPLIT ?= test
 eval: ## Évaluation (agent appelé directement) ; SPLIT=test|dev|intent|followup, PASSES=3
-	EVAL_META_DSN='$(DBT_OWNER_DSN)' uv run python -m decision_eval run --split $(SPLIT) --passes $(or $(PASSES),3)
+	@echo "decision_eval run --split $(SPLIT) --passes $(or $(PASSES),3)"
+	@EVAL_META_DSN='$(DBT_OWNER_DSN)' uv run python -m decision_eval run --split $(SPLIT) --passes $(or $(PASSES),3)
 
 test: ## Tests pytest de tous les paquets
 	uv run pytest -q
@@ -138,7 +142,8 @@ dev-token: ## Jeton JWT local signé pour ROLE (admin | analyste | decideur), sa
 
 api-dev: ## API locale qui accepte les jetons de développement (make dev-token)
 	@test -f var/dev-auth/jwks.json || uv run python -m decision_api.cli dev-token --quiet > /dev/null
-	ENVIRONMENT=dev KEYCLOAK_JWKS_URL='$(DEV_JWKS)' AGENT_RO_DSN='$(AGENT_RO_DSN)' \
+	@echo "uvicorn decision_api.main:app (développement, jetons locaux) sur http://127.0.0.1:8000"
+	@ENVIRONMENT=dev KEYCLOAK_JWKS_URL='$(DEV_JWKS)' AGENT_RO_DSN='$(AGENT_RO_DSN)' \
 	  APP_DATABASE_URL='$(APP_DATABASE_URL)' \
 	  uv run uvicorn decision_api.main:app --reload --host 127.0.0.1 --port 8000
 
@@ -162,7 +167,9 @@ DC := HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose $(DC_FILES) --profile
 DC_TOOLS := $(DC) --profile tools run --rm -T tools   # -T : sans terminal (appelable par un script)
 
 up: secrets ## Conteneurs : lance la pile (Postgres, Keycloak, migrations, API, Caddy, Mailpit)
-	@mkdir -p var/reports var/dev-auth
+	@# web/dist créé ici, à votre nom : sinon Docker le crée en root au montage du proxy, et la
+	@# construction de l'interface ne peut plus y écrire (EACCES).
+	@mkdir -p var/reports var/dev-auth web/dist
 	@test -f web/dist/index.html || echo "Interface non construite : make dc-web-build (ou make web-build) puis make restart S=proxy"
 	$(DC) up -d --build
 

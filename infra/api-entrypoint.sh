@@ -17,7 +17,9 @@ fi
 if pw=$(s app_owner_password); then
   export OWNER_DATABASE_URL="postgresql://app_owner:$(enc "$pw")@$host:$port/$db"
 fi
-if v=$(s anthropic_api_key); then export ANTHROPIC_API_KEY="$v"; fi
+# Clé Claude : le secret Docker prime ; s'il est vide, la variable ANTHROPIC_API_KEY (venue de .env par
+# le Makefile) est conservée.
+if v=$(s anthropic_api_key) && [ -n "$v" ]; then export ANTHROPIC_API_KEY="$v"; fi
 if v=$(s log_pseudonym_key); then export LOG_PSEUDONYM_KEY="$v"; fi
 unset pw v
 exec "$@"

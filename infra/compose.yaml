@@ -171,6 +171,9 @@ services:
       KEYCLOAK_CLIENT_ID: decision-web
       LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5-5}
       LLM_EFFORT: ${LLM_EFFORT:-medium}
+      # Repli si infra/secrets/anthropic_api_key.txt est vide : clé de .env (exportée par le Makefile).
+      # Le secret reste préférable (une variable d'environnement est visible par docker inspect).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: ""
       RIGHTS_TEST_REPORT: /app/var/reports/rights-test.json
     secrets:
