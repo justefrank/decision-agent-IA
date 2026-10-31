@@ -32,6 +32,13 @@ terms:
     rule: >
       Sauf mention contraire (« échouées », « toutes »), un volume ou un montant porte sur les
       transactions réussies.
+  - term: chiffre d'affaires
+    rule: >
+      « chiffre d'affaires », « CA », « revenus » ou « ce que Wave gagne » désignent le KPI revenus_frais
+      (somme des frais des transactions réussies) : c'est le revenu de Wave. Ne pas demander de précision
+      pour ce terme. La valeur transférée est l'argent des clients, pas un revenu : ne l'utiliser que si
+      la question parle explicitement de montants ou de valeur transférée. Rappeler dans la réponse que
+      le chiffre d'affaires est mesuré par les revenus de frais.
   - term: destinataire
     rule: >
       Le modèle ne contient pas le destinataire d'un transfert : toute question sur les
