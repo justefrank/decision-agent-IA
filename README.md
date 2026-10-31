@@ -5,7 +5,28 @@ mobile money (dépôts, retraits, transferts, paiements) au Sénégal. Les chiff
 entrepôt Postgres en étoile, interrogé par Claude via un serveur MCP qui ne détient qu'un rôle en
 lecture seule ; chaque nombre cité est tracé jusqu'au résultat d'outil qui le produit.
 
-Documents : [`SRS.md`](SRS.md) (exigences), [`docs/EVALUATION_V5.md`](docs/EVALUATION_V5.md)
+**Pour lancer l'application, commencer par [`docs/GUIDE.md`](docs/GUIDE.md)** : présentation, lancement avec
+ou sans Docker, premier compte, clé Claude, dépannage.
+
+## Démarrage rapide
+
+Avec Docker (seul prérequis : Docker et Compose v2) :
+
+```bash
+make dc-init                                # pile, données factices, dbt, test de droits
+make dc-web-build && make restart S=proxy   # interface
+# clé Claude dans infra/secrets/anthropic_api_key.txt (ou ANTHROPIC_API_KEY dans .env), puis : make up
+make dc-admin EMAIL=prenom.nom@exemple.sn   # premier compte → https://localhost
+```
+
+Sans Docker (prérequis : uv, Postgres 16+, Node 22) :
+
+```bash
+make init && make api-dev                   # API sur http://127.0.0.1:8000
+make web-install && make web-dev            # second terminal → http://localhost:5173
+```
+
+Documents : [`docs/GUIDE.md`](docs/GUIDE.md) (utilisation et lancement), [`SRS.md`](SRS.md) (exigences), [`docs/EVALUATION_V5.md`](docs/EVALUATION_V5.md)
 (décisions v5, prioritaires en cas de conflit), [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md),
 [`docs/AGENTIC_DESIGN.md`](docs/AGENTIC_DESIGN.md), revues détaillées dans `docs/reviews/`.
 
@@ -140,8 +161,9 @@ make ps                              # état des services ; make logs S=api pour
 - **Secrets** : `make secrets` (appelé par `make up`) crée `infra/secrets/*.txt`. Le dossier est en
   700 ; les fichiers sont en 644, car Compose (hors Swarm) les monte tels quels et Postgres, Keycloak
   et l'API les lisent sous des UID différents du vôtre.
-- **Production locale** (`make up`) : l'API exige des jetons Keycloak avec OTP ; la SPA n'existant pas
-  encore, utilisez `make dev-up` pour appeler l'API directement.
+- **Production locale** (`make up`) : l'API exige des jetons Keycloak avec OTP (connexion par
+  l'interface sur https://localhost) ; `make dev-up` permet d'appeler l'API directement avec des jetons
+  locaux.
 - **Fichiers créés par les outils** (`var/`, `warehouse/target/`) : ils appartiennent à votre
   utilisateur (le conteneur outils tourne avec votre UID).
 
@@ -192,10 +214,9 @@ make ps                              # état des services ; make logs S=api pour
   le volume `pgdata` en développement), puis redémarrer Keycloak.
 - Les mots de passe des rôles Postgres ne sont lus qu'à la création du volume `pgdata`.
 
-Vérifié hors Docker : Caddyfile (Caddy 2.10.2 local : routes, 404, 413, page d'attente, SSE non
-compressé) ; realm (Keycloak 26.8.1 local : import, substitution de `PUBLIC_HOST`, `amr`, flux de
-réinitialisation, healthcheck `/auth/health/ready` sur 9000). Non vérifié sans démon Docker :
-démarrage complet de la pile compose, console d'administration par tunnel (`KC_HOSTNAME_ADMIN`).
+Vérifié : pile compose complète sur un poste Linux (`make dc-init`, interface, Keycloak, premier appel
+réel à Claude) ; images construites par la CI. Non vérifié : console d'administration par tunnel SSH
+(`KC_HOSTNAME_ADMIN`).
 
 ## Données
 

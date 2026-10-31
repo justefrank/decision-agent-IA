@@ -45,7 +45,7 @@ COMPOSE := docker compose -f infra/compose.yaml
         purge-logs
 
 help: ## Liste des cibles
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
 sync: ## Installe tous les paquets Python (uv)
 	uv sync --all-packages
