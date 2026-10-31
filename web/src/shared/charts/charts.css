@@ -1,0 +1,159 @@
+/* Graphiques maison : couleurs via jetons --c1…--c4, jamais seules (pointillés, hachures, étiquettes). */
+.ch {
+  margin: 0;
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.ch-title {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+.ch-canvas {
+  min-width: 0;
+  width: 100%;
+}
+.ch-canvas svg {
+  display: block;
+  max-width: 100%;
+  overflow: visible;
+}
+.ch-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.ch-tick {
+  fill: var(--soft);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.ch-dot {
+  fill: var(--card);
+  stroke-width: 2;
+}
+.ch-label {
+  fill: var(--ink);
+  font-size: 13.5px;
+  font-weight: 500;
+  font-family: var(--font-ui);
+}
+.ch-value {
+  fill: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.ch-track {
+  fill: var(--panel);
+}
+.ch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  font-size: var(--t-xs);
+}
+.ch-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.ch-legend b {
+  font-weight: 650;
+}
+.ch-donut {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.75rem;
+}
+.ch-donut > svg {
+  flex: none;
+}
+.ch-donut-legend {
+  flex: 1 1 14rem;
+  display: grid;
+  gap: 0.15rem;
+  font-size: var(--t-sm);
+}
+.ch-donut-legend li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 32px;
+  border-bottom: 1px solid var(--line);
+}
+.ch-donut-legend li:last-child {
+  border-bottom: 0;
+}
+.ch-donut-name {
+  overflow-wrap: anywhere;
+}
+.ch-donut-val {
+  color: var(--soft);
+  font-size: var(--t-xs);
+  min-width: 5.5rem;
+  text-align: right;
+}
+.ch-values summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--primary);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.ch-values-scroll {
+  max-height: 18rem;
+  overflow: auto;
+}
+.ch-table {
+  max-height: 26rem;
+  overflow: auto;
+}
+.ch-table .ui-table th[scope='row'] {
+  font-weight: 500;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  background: transparent;
+  white-space: normal;
+}
+.ch-table .ui-table th[scope='row'].is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ch-table thead th {
+  position: sticky;
+  top: 0;
+}
+.ch-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  font-size: inherit;
+}
+.is-num .ch-sort {
+  flex-direction: row-reverse;
+}
+.ch-sort-mark {
+  display: inline-grid;
+  width: 14px;
+}
+.ch-truncated td {
+  color: var(--soft);
+  font-size: var(--t-xs);
+  background: var(--panel);
+}
+.ch-truncated svg {
+  vertical-align: -3px;
+}
