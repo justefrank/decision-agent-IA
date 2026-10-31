@@ -121,6 +121,30 @@ services:
       - app_owner_password
     command: ["alembic", "-c", "/app/packages/api/alembic.ini", "upgrade", "head"]
 
+  # Rétention de app.query_log (90 jours par défaut, SRS §10) : purge quotidienne avec app_owner, le seul
+  # rôle autorisé à supprimer dans le journal en ajout seul. Un échec est journalisé et réessayé le lendemain.
+  logs-purge:
+    build: *api-build
+    image: decision-api:local
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: warehouse
+      RETENTION_DAYS: ${RETENTION_DAYS:-90}
+    secrets:
+      - app_owner_password
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          python -m decision_api.cli purge-logs --days "$${RETENTION_DAYS:-90}" || echo "purge en échec, nouvel essai demain"
+          sleep 86400
+        done
+
   api:
     build: *api-build
     image: decision-api:local

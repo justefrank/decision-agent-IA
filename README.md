@@ -99,6 +99,20 @@ Avant un commit : `make web-check` (types, lint, tests). `make web-e2e` lance 18
 OpenAPI et les contrats Python : `cd web && npm run api-types`. Les polices sont installées en local
 (CSP stricte, aucun appel à un CDN).
 
+## Intégration continue
+
+`.github/workflows/ci.yml` s'exécute à chaque PR et sur `main`, sans aucun secret :
+
+| Job | Contrôle |
+|---|---|
+| `python` | ruff ; contrats TypeScript à jour (`web/src/api/openapi.json` régénéré, sinon échec : `make web-api-types`) ; tests de tous les paquets (garde SQL, MCP, agent, API, évaluation) |
+| `warehouse` | `make init` (données à l'échelle 0,05, 53 tests dbt dont les 6 KPI figés, droits de `agent_ro`, migrations), tests contre cette base, références du jeu de test, anti-fuite |
+| `web` | types, lint, tests, build, puis 180 tests de bout en bout et d'accessibilité (Playwright, axe-core) |
+| `docker` | compose valide ; images de l'API et du conteneur outils **construites** ; l'API importe ses modules dans son image |
+| `secrets` | scan gitleaks (ENF4) |
+
+La première exécution est aussi le premier test réel de la construction des images Docker. En local : `make test lint web-check web-e2e`.
+
 ## Démarrage en conteneurs (Docker sur votre machine)
 
 Mêmes commandes que le mode local, préfixées `dc-` : elles s'exécutent dans le conteneur « outils »
@@ -131,6 +145,7 @@ make ps                              # état des services ; make logs S=api pour
 - **Fichiers créés par les outils** (`var/`, `warehouse/target/`) : ils appartiennent à votre
   utilisateur (le conteneur outils tourne avec votre UID).
 
+- **Rétention des journaux** : le service `logs-purge` supprime chaque jour les lignes de `app.query_log` de plus de `RETENTION_DAYS` (90 par défaut) avec le rôle `app_owner`.
 - **Migrations** : le service `migrate` (Alembic, rôle `app_owner`) s'exécute à chaque démarrage ;
   l'API attend sa fin (`service_completed_successfully`).
 - **Interface** : Caddy sert `web/dist` (`WEB_DIST`). Tant qu'il ne contient pas d'`index.html`
