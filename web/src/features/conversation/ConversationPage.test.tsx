@@ -7,6 +7,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import type { AssistantMessage } from '@/api/types';
+import { AuthContext, type AuthState } from '@/auth/AuthProvider';
 import { LiveRegion } from '@/shared/ui';
 
 import { ConversationPage } from './ConversationPage';
@@ -102,9 +103,11 @@ function gatedStream(final: AssistantMessage) {
   return { response: new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } }), release };
 }
 
-function renderPage(entry: string | { pathname: string; state?: unknown } = '/questions') {
+function renderPage(entry: string | { pathname: string; state?: unknown } = '/questions', questionMaxChars?: number) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const auth = { status: 'authenticated', me: { question_max_chars: questionMaxChars } } as unknown as AuthState;
   return render(
+    <AuthContext.Provider value={questionMaxChars === undefined ? null : auth}>
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[entry]}>
         <LiveRegion />
@@ -113,7 +116,8 @@ function renderPage(entry: string | { pathname: string; state?: unknown } = '/qu
           <Route path="/questions/:conversationId" element={<ConversationPage />} />
         </Routes>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
+    </AuthContext.Provider>,
   );
 }
 
@@ -225,15 +229,49 @@ describe('Page Questions', () => {
     await screen.findByRole('button', { name: 'Réessayer' });
   });
 
-  it('quota atteint (429) : message clair, sans bouton Réessayer', async () => {
+  it('quota atteint (429) : donne l’heure de retour locale, sans bouton Réessayer', async () => {
+    const retryAt = '2026-10-31T00:00:00Z';
     mockApi(() =>
-      HttpResponse.json({ error: { code: 'quota_exceeded', message: 'Quota quotidien de questions atteint.' } }, { status: 429 }),
+      HttpResponse.json(
+        { error: { code: 'quota_exceeded', message: 'Quota quotidien de questions atteint.', retry_at: retryAt } },
+        { status: 429, headers: { 'Retry-After': '3600' } },
+      ),
     );
     const user = userEvent.setup();
     renderPage();
     await ask(user, 'Valeur ?');
-    expect(await screen.findByText(/limite de questions pour aujourd’hui/)).toBeInTheDocument();
+    const hhmm = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(retryAt));
+    expect(
+      await screen.findByText(`Limite de questions atteinte. Vous pourrez poser une nouvelle question à ${hhmm} (heure locale).`),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Réessayer' })).not.toBeInTheDocument();
+  });
+
+  it('quota atteint sans retry_at : l’heure se déduit de Retry-After', async () => {
+    mockApi(() =>
+      HttpResponse.json({ error: { code: 'quota_exceeded', message: 'x' } }, { status: 429, headers: { 'Retry-After': '7200' } }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await ask(user, 'Valeur ?');
+    expect(await screen.findByText(/nouvelle question à \d{2}:\d{2} \(heure locale\)/)).toBeInTheDocument();
+  });
+
+  it('trop de flux simultanés (429) : dit dans combien de secondes réessayer', async () => {
+    mockApi(() =>
+      HttpResponse.json({ error: { code: 'too_many_streams', message: 'x' } }, { status: 429, headers: { 'Retry-After': '5' } }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await ask(user, 'Valeur ?');
+    expect(await screen.findByText(/Vous pourrez poser une nouvelle question dans 5 secondes\./)).toBeInTheDocument();
+  });
+
+  it('la limite de la zone de saisie vient de me.question_max_chars', async () => {
+    mockApi(() => answer(kpiAnswer));
+    renderPage('/questions', 300);
+    expect(box()).toHaveAttribute('maxlength', '300');
+    expect(screen.getByText(/0 \/ 300/)).toBeInTheDocument();
   });
 
   it('flux coupé sans réponse : message et Réessayer', async () => {

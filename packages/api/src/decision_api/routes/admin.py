@@ -18,9 +18,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from decision_core.models import AssistantMessage
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import Select, and_, case, func, insert, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -519,6 +520,59 @@ async def list_feedback(
         d["id"], d["message_id"] = str(r.id), str(r.message_id)
         items.append(d)
     return {"total": int(total), "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/feedback/{feedback_id}")
+async def feedback_detail(feedback_id: str, user: AnalystDep, session: SessionDep) -> dict[str, Any]:
+    """Signalement + réponse signalée avec sa chaîne de preuve (jamais le reste de la conversation).
+
+    La question n'est renvoyée que si l'utilisateur y a consenti. Chaque lecture est journalisée
+    (`feedback.detail`, identifiant du signalement seulement) avant la réponse.
+    """
+    try:
+        fid = uuid.UUID(feedback_id)
+    except ValueError as exc:
+        raise ApiError(404, "not_found", "Signalement introuvable.") from exc
+    fb = m.feedback.c
+    row = (
+        await session.execute(
+            select(
+                fb.id,
+                fb.ts,
+                fb.category,
+                fb.comment,
+                fb.consent_question,
+                fb.question_text,
+                fb.status,
+                fb.reject_reason,
+                fb.promoted_to_dev,
+                fb.handled_at,
+                fb.message_id,
+                m.message.c.trace_id,
+                m.message.c.structured_json,
+            )
+            .select_from(m.feedback.join(m.message, m.message.c.id == fb.message_id))
+            .where(fb.id == fid)
+        )
+    ).first()
+    if row is None:
+        raise ApiError(404, "not_found", "Signalement introuvable.")
+    await audit_access(
+        session, user, "feedback.detail", target_trace_id=row.trace_id, details={"feedback_id": str(fid)}
+    )
+    answer = None
+    if row.structured_json:
+        try:
+            answer = AssistantMessage.model_validate(row.structured_json).for_role(user.role)
+        except ValidationError:
+            answer = None
+    out = _jsonable(row)
+    out.pop("structured_json", None)
+    out["id"], out["message_id"] = str(row.id), str(row.message_id)
+    out.pop("question_text", None)
+    out["question"] = row.question_text if row.consent_question else None
+    out["answer"] = answer.model_dump(mode="json") if answer else None
+    return out
 
 
 class FeedbackPatch(BaseModel):

@@ -68,4 +68,5 @@ export const EXAMPLE_QUESTIONS = [
   'Combien d’agents actifs à Dakar sur les 30 derniers jours ?',
 ] as const;
 
-export const MAX_QUESTION = 1000;
+/** Valeur de repli tant que `GET /api/me` ne l'a pas fournie (`me.question_max_chars`). */
+export const DEFAULT_MAX_QUESTION = 1000;

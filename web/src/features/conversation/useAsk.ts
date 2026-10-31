@@ -44,20 +44,32 @@ export interface Turn {
 let counter = 0;
 const nextId = () => `t${++counter}`;
 
+/** « HH:MM » en heure locale ; l'heure vient de `retry_at`, à défaut de `Retry-After`. */
+function quotaMessage(e: ApiError): string {
+  const at = e.retryAt
+    ? new Date(e.retryAt)
+    : e.retryAfterS !== undefined
+      ? new Date(Date.now() + e.retryAfterS * 1000)
+      : null;
+  if (at === null || Number.isNaN(at.getTime()))
+    return "Limite de questions atteinte. Vous pourrez poser une nouvelle question demain.";
+  const hhmm = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+  return `Limite de questions atteinte. Vous pourrez poser une nouvelle question à ${hhmm} (heure locale).`;
+}
+
 export function describeError(e: unknown): TurnError {
   if (e instanceof ApiError) {
     if (e.status === 429 && e.code === "too_many_streams")
       return {
         kind: "busy",
-        message:
-          "Une réponse est déjà en cours. Attendez qu’elle se termine, puis posez votre question.",
+        message: `Une réponse est déjà en cours. ${
+          e.retryAfterS !== undefined
+            ? `Vous pourrez poser une nouvelle question dans ${e.retryAfterS} ${e.retryAfterS > 1 ? "secondes" : "seconde"}.`
+            : "Attendez qu’elle se termine, puis posez votre question."
+        }`,
       };
     if (e.status === 429)
-      return {
-        kind: "quota",
-        message:
-          "Vous avez atteint votre limite de questions pour aujourd’hui. Elle se renouvelle demain : revenez à ce moment-là.",
-      };
+      return { kind: "quota", message: quotaMessage(e) };
     if (e.status === 503)
       return {
         kind: "unavailable",

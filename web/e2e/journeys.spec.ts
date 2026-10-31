@@ -238,6 +238,20 @@ test.describe('administration', () => {
     await page.keyboard.press('Escape');
     await expect(drawer).toBeHidden();
   });
+
+  test('un signalement ouvre la réponse signalée avec sa chaîne de preuve', async ({ page, start }) => {
+    await start('analyste');
+    await page.goto('/admin/signalements');
+    await page.getByRole('button', { name: /Ouvrir le signalement/ }).click();
+    const drawer = page.getByRole('dialog', { name: 'Signalement' });
+    await expect(drawer.getByText('L’ouverture de ce détail est journalisée.')).toBeVisible();
+    const answer = drawer.getByRole('article', { name: 'Réponse signalée' });
+    await expect(answer.getByText('1,23 milliard FCFA').first()).toBeVisible();
+    await expect(answer.getByText('Somme des montants')).toBeVisible();
+    await expect(drawer.getByText('Quelle est la valeur transférée en septembre ?', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(drawer).toBeHidden();
+  });
 });
 
 test.describe('thème', () => {

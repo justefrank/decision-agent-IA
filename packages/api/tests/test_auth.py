@@ -34,6 +34,16 @@ async def test_valid_token_me(ctx_nodb):
     assert body["sub"] == "alice" and body["roles"] == ["analyste"] and body["sees_sql"] is True
 
 
+async def test_me_exposes_reference_date_and_question_limit(ctx_nodb):
+    r = await ctx_nodb.client.get("/api/me", headers=ctx_nodb.h("alice", ["decideur"]))
+    body = r.json()
+    assert body["reference_date"] == "2026-09-30"
+    assert (
+        body["question_max_chars"]
+        == ctx_nodb.app.state.runtime.semantic.config["agent"]["max_question_chars"]
+    )
+
+
 async def test_missing_token_uniform_error(ctx_nodb):
     r = await ctx_nodb.client.get("/api/me")
     assert r.status_code == 401

@@ -11,9 +11,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from decision_api.auth import User, authenticated_user
+from decision_api.config import cfg
 
 router = APIRouter(tags=["système"])
 log = logging.getLogger("decision_api.health")
+DEFAULT_MAX_QUESTION_CHARS = 1000
 
 
 async def check_db(request: Request) -> bool:
@@ -72,7 +74,12 @@ async def health(request: Request) -> JSONResponse:
 
 
 @router.get("/me")
-async def me(user: Annotated[User, Depends(authenticated_user)]) -> dict[str, Any]:
+async def me(request: Request, user: Annotated[User, Depends(authenticated_user)]) -> dict[str, Any]:
+    runtime = getattr(request.app.state, "runtime", None)
+    settings = request.app.state.settings
+    max_chars = DEFAULT_MAX_QUESTION_CHARS
+    if runtime is not None:
+        max_chars = int(cfg(runtime.semantic, "agent.max_question_chars", DEFAULT_MAX_QUESTION_CHARS))
     return {
         "sub": user.sub,
         "name": user.name,
@@ -80,4 +87,7 @@ async def me(user: Annotated[User, Depends(authenticated_user)]) -> dict[str, An
         "roles": sorted(user.roles),
         "role": user.role if user.roles else None,
         "sees_sql": bool(user.roles) and user.sees_sql,
+        # Date de référence des données (jeu factice figé) et longueur maximale d'une question.
+        "reference_date": settings.reference_date.isoformat(),
+        "question_max_chars": max_chars,
     }

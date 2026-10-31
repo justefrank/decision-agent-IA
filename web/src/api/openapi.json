@@ -1224,6 +1224,54 @@
    }
   },
   "/api/admin/feedback/{feedback_id}": {
+   "get": {
+    "tags": [
+     "back-office"
+    ],
+    "summary": "Feedback Detail",
+    "description": "Signalement + réponse signalée avec sa chaîne de preuve (jamais le reste de la conversation).\n\nLa question n'est renvoyée que si l'utilisateur y a consenti. Chaque lecture est journalisée\n(`feedback.detail`, identifiant du signalement seulement) avant la réponse.",
+    "operationId": "feedback_detail_api_admin_feedback__feedback_id__get",
+    "parameters": [
+     {
+      "name": "feedback_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Feedback Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Feedback Detail Api Admin Feedback  Feedback Id  Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ]
+   },
    "patch": {
     "tags": [
      "back-office"

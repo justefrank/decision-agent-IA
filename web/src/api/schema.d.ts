@@ -310,7 +310,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Feedback Detail
+         * @description Signalement + réponse signalée avec sa chaîne de preuve (jamais le reste de la conversation).
+         *
+         *     La question n'est renvoyée que si l'utilisateur y a consenti. Chaque lecture est journalisée
+         *     (`feedback.detail`, identifiant du signalement seulement) avant la réponse.
+         */
+        get: operations["feedback_detail_api_admin_feedback__feedback_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1397,6 +1404,39 @@ export interface operations {
             };
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_detail_api_admin_feedback__feedback_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                feedback_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

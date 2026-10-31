@@ -40,7 +40,7 @@ COMPOSE := docker compose -f infra/compose.yaml
 
 .PHONY: help sync db-up db-down seed generate dbt-build dbt-run rights-test migrate api eval test \
         lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user \
-        web-install web-dev web-dev-dc web-build web-check web-e2e dc-web-build up dev-up down logs ps restart dc-build dc-init dc-seed dc-rights-test dc-migrate dc-admin dc-user \
+        web-install web-dev web-dev-dc web-build web-check web-e2e web-api-types dc-web-build up dev-up down logs ps restart dc-build dc-init dc-seed dc-rights-test dc-migrate dc-admin dc-user \
         dc-token dc-eval dc-shell dc-reset \
         purge-logs
 
@@ -238,6 +238,10 @@ web-dev-dc: ## Interface : serveur de développement avec les jetons et l'API de
 
 web-check: ## Interface : types, lint et tests
 	cd web && npm run typecheck && npm run lint && npm run test
+
+web-api-types: ## Interface : régénère les types TypeScript depuis l'OpenAPI de l'API et les contrats de decision_core
+	uv run python scripts/gen_openapi.py web/src/api/openapi.json
+	cd web && npm run api-types
 
 web-e2e: ## Interface : tests de bout en bout et accessibilité (Playwright, API simulée, sans backend)
 	cd web && npx playwright test
