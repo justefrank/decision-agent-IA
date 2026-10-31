@@ -146,7 +146,7 @@ function Questions() {
 function renderPage(role: Role = 'decideur', url = '/indicateurs') {
   const auth = {
     status: 'authenticated',
-    me: { sub: 'u', name: 'U', email: null, roles: [role], role, sees_sql: role !== 'decideur' } satisfies Me,
+    me: { sub: 'u', name: 'U', email: null, roles: [role], role, sees_sql: role !== 'decideur', reference_date: '2026-09-30', question_max_chars: 1000 } satisfies Me,
   } as unknown as AuthState;
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -209,6 +209,13 @@ describe('relevé des indicateurs', () => {
     // revenir au mois de référence retire le paramètre
     await user.selectOptions(screen.getByLabelText('Période'), '2026-09');
     expect(screen.getByTestId('loc')).toHaveTextContent('/indicateurs?region=Kolda');
+  });
+
+  it('prend le mois de référence dans me.reference_date, sans appel supplémentaire', async () => {
+    renderPage('decideur', '/indicateurs?periode=2026-03');
+    await screen.findByRole('table');
+    expect(within(screen.getByLabelText('Période')).getAllByRole('option')[0]).toHaveValue('2026-09');
+    expect(requests).toEqual(['?period=2026-03']); // plus d'appel sans paramètre pour deviner le mois
   });
 
   it('lit la période et la région depuis l’URL', async () => {

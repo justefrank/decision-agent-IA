@@ -327,3 +327,14 @@ async def test_supervisor_recovers_state_after_transient_probe_failure():
         assert sup.ready and starter.started == 1
     finally:
         await sup.stop()
+
+
+def test_next_quota_reset_is_next_utc_midnight():
+    from datetime import UTC, datetime
+
+    from decision_api.services import next_quota_reset
+
+    at, wait = next_quota_reset(datetime(2026, 9, 30, 23, 59, 30, tzinfo=UTC))
+    assert at == datetime(2026, 10, 1, tzinfo=UTC) and wait == 30
+    at, wait = next_quota_reset(datetime(2026, 12, 31, 0, 0, 0, tzinfo=UTC))
+    assert at == datetime(2027, 1, 1, tzinfo=UTC) and wait == 86_400

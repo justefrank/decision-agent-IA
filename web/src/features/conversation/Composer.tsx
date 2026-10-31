@@ -1,9 +1,11 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useContext, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 
 import { fmtInt } from '@/shared/format';
 import { Button } from '@/shared/ui';
 
-import { MAX_QUESTION } from './copy';
+import { AuthContext } from '@/auth/AuthProvider';
+
+import { DEFAULT_MAX_QUESTION } from './copy';
 
 export function Composer({
   busy,
@@ -16,7 +18,8 @@ export function Composer({
   onSend: (q: string) => void;
   onStop: () => void;
 }) {
-  const [value, setValue] = useState(prefill.slice(0, MAX_QUESTION));
+  const max = useContext(AuthContext)?.me?.question_max_chars ?? DEFAULT_MAX_QUESTION;
+  const [value, setValue] = useState(prefill.slice(0, max));
   const ref = useRef<HTMLTextAreaElement>(null);
   const id = useId();
   // Question reprise d'une autre page (ex. approfondissement) : pré-remplie, jamais envoyée toute seule.
@@ -58,7 +61,7 @@ export function Composer({
           ref={ref}
           className="cv-input"
           rows={1}
-          maxLength={MAX_QUESTION}
+          maxLength={max}
           value={value}
           placeholder="Posez une question sur les transactions"
           aria-describedby={`${id}-hint`}
@@ -73,8 +76,8 @@ export function Composer({
         <div className="cv-composer-foot">
           <p id={`${id}-hint`} className="cv-count num">
             <span className="cv-keys">Entrée envoie, Maj+Entrée saute une ligne.</span>{' '}
-            <span data-near={value.length >= MAX_QUESTION * 0.9}>
-              {fmtInt(value.length)} / {fmtInt(MAX_QUESTION)}
+            <span data-near={value.length >= max * 0.9}>
+              {fmtInt(value.length)} / {fmtInt(max)}
             </span>
           </p>
           {busy ? (

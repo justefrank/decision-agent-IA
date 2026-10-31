@@ -29,9 +29,16 @@ export interface Me {
   roles: Role[];
   role: Role;
   sees_sql: boolean;
+  /** Date de référence des données (AAAA-MM-JJ) : le mois de référence du tableau de bord en découle. */
+  reference_date: string;
+  /** Longueur maximale d'une question (semantic/config.yaml). */
+  question_max_chars: number;
 }
 
-/** Contrat d'erreur uniforme de l'API : `{"error": {"code", "message", "request_id"}}`. */
+/**
+ * Contrat d'erreur uniforme de l'API : `{"error": {"code", "message", "request_id"}}`.
+ * `retry_at` (ISO 8601 UTC) accompagne le 429 `quota_exceeded`.
+ */
 export interface ApiErrorBody {
-  error: { code: string; message: string; request_id?: string };
+  error: { code: string; message: string; request_id?: string; retry_at?: string };
 }

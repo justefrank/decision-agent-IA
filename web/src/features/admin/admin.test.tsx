@@ -275,22 +275,97 @@ const FB = {
   trace_id: 'abc123',
 };
 
+const ANSWER = {
+  kind: 'answer',
+  text: 'La valeur transférée en septembre 2026 est de 1,23 milliard FCFA.',
+  period: { start: '2026-09-01', end: '2026-09-30', label: 'septembre 2026' },
+  scope: 'Tout le Sénégal',
+  tables: ['analytics.fact_transaction'],
+  chart: { type: 'kpi', y: [] },
+  facts: [{ id: 'f1', value: 1230000000, unit: 'xof', label: 'Valeur transférée', result_index: 0, rendered: '1,23 milliard FCFA' }],
+  evidence: [
+    { kind: 'table', label: 'Transactions' },
+    { kind: 'filtre', label: 'Transactions réussies' },
+    { kind: 'periode', label: 'septembre 2026' },
+    { kind: 'operation', label: 'Somme des montants' },
+  ],
+  sql: ['SELECT sum(amount_xof) FROM analytics.fact_transaction'],
+  certified: true,
+};
+const detailOf = (over: Record<string, unknown> = {}) => {
+  const rest: Partial<typeof FB> = { ...FB };
+  delete rest.question_text;
+  return { ...rest, question: null, answer: ANSWER, ...over };
+};
+const detailHandler = (over: Record<string, unknown> = {}, hits?: string[]) =>
+  http.get(A(`feedback/${FB.id}`), () => {
+    hits?.push(FB.id);
+    return HttpResponse.json(detailOf(over) as never);
+  });
+
 describe('Signalements', () => {
-  it('cache la question sans consentement', async () => {
-    server.use(json('feedback', { total: 1, page: 1, page_size: 25, items: [{ ...FB, question_text: 'texte secret' }] }));
+  it('sans consentement : la question est remplacée par une phrase, la réponse et ses preuves sont lisibles', async () => {
+    const hits: string[] = [];
+    server.use(json('feedback', { total: 1, page: 1, page_size: 25, items: [FB] }), detailHandler({}, hits));
     renderAt(<AdminFeedbackPage />);
     await userEvent.click(await screen.findByRole('button', { name: /Ouvrir le signalement/ }));
     const drawer = await screen.findByRole('dialog', { name: 'Signalement' });
-    expect(within(drawer).getByText(/n’a pas consenti/)).toBeInTheDocument();
-    expect(within(drawer).queryByText('texte secret')).not.toBeInTheDocument();
+    expect(within(drawer).getByText('L’ouverture de ce détail est journalisée.')).toBeInTheDocument();
+    expect(await within(drawer).findByText('L’utilisateur n’a pas autorisé l’affichage de sa question.')).toBeInTheDocument();
+    const answer = await within(drawer).findByRole('article', { name: 'Réponse signalée' });
+    expect(within(answer).getByText('1,23 milliard FCFA')).toBeInTheDocument();
+    expect(within(answer).getByText('septembre 2026', { selector: 'span' })).toBeInTheDocument();
+    expect(within(answer).getByText('Tout le Sénégal')).toBeInTheDocument();
+    const proof: [string, string][] = [
+      ['Table', 'Transactions'],
+      ['Filtre', 'Transactions réussies'],
+      ['Période', 'septembre 2026'],
+      ['Opération', 'Somme des montants'],
+    ];
+    for (const [label, value] of proof) {
+      const term = within(answer).getByText(label, { selector: 'dt' });
+      expect(term.nextElementSibling).toHaveTextContent(value);
+    }
+    // le SQL est dans un volet replié
+    const toggle = within(answer).getByText('Voir le calcul (SQL)');
+    expect(toggle.closest('details')).not.toHaveAttribute('open');
+    await userEvent.click(toggle);
+    expect(toggle.closest('details')).toHaveAttribute('open');
+    expect(within(answer).getByText(/SELECT sum\(amount_xof\)/)).toBeInTheDocument();
     expect(within(drawer).getByRole('button', { name: 'Ajouter au jeu de développement' })).toBeDisabled();
     expect(within(drawer).getByText(/jamais dans le jeu de test/)).toBeInTheDocument();
+    expect(hits).toHaveLength(1);
+  });
+
+  it('avec consentement : affiche la question', async () => {
+    server.use(
+      json('feedback', { total: 1, page: 1, page_size: 25, items: [{ ...FB, consent_question: true, question_text: 'Valeur transférée en septembre ?' }] }),
+      detailHandler({ consent_question: true, question: 'Valeur transférée en septembre ?' }),
+    );
+    renderAt(<AdminFeedbackPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Ouvrir le signalement/ }));
+    const drawer = await screen.findByRole('dialog', { name: 'Signalement' });
+    expect(await within(drawer).findByText('Valeur transférée en septembre ?', { selector: 'p' })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/n’a pas autorisé/)).not.toBeInTheDocument();
+  });
+
+  it('une erreur de chargement du détail laisse les actions disponibles', async () => {
+    server.use(
+      json('feedback', { total: 1, page: 1, page_size: 25, items: [FB] }),
+      http.get(A(`feedback/${FB.id}`), () => HttpResponse.json({ error: { code: 'boom', message: 'Le service ne répond pas.' } }, { status: 400 })),
+    );
+    renderAt(<AdminFeedbackPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /Ouvrir le signalement/ }));
+    const drawer = await screen.findByRole('dialog', { name: 'Signalement' });
+    expect(await within(drawer).findByText('Le service ne répond pas.')).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Marquer comme traité' })).toBeEnabled();
   });
 
   it('exige un motif pour rejeter, puis l’envoie', async () => {
     const bodies: unknown[] = [];
     server.use(
       json('feedback', { total: 1, page: 1, page_size: 25, items: [FB] }),
+      detailHandler(),
       http.patch(A(`feedback/${FB.id}`), async ({ request }) => {
         bodies.push(await request.json());
         return HttpResponse.json({ ...FB, status: 'rejete' });
@@ -311,6 +386,7 @@ describe('Signalements', () => {
   it('marque un signalement comme traité et l’annonce', async () => {
     server.use(
       json('feedback', { total: 1, page: 1, page_size: 25, items: [FB] }),
+      detailHandler(),
       http.patch(A(`feedback/${FB.id}`), () => HttpResponse.json({ ...FB, status: 'traite' })),
     );
     renderAt(<AdminFeedbackPage />);

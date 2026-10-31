@@ -6,13 +6,14 @@ import calendar
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 import unicodedata
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from decision_core.models import Period, QueryLogRecord
@@ -85,6 +86,16 @@ QUOTA_TOOLS = ("question", "analysis")
 _DAY_START = "(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
 
 
+STREAMS_RETRY_AFTER_S = 5
+
+
+def next_quota_reset(now: datetime | None = None) -> tuple[datetime, int]:
+    """Prochain minuit UTC (fin du jour de quota) et nombre de secondes à attendre (au moins 1)."""
+    now = now or datetime.now(UTC)
+    reset = datetime(now.year, now.month, now.day, tzinfo=UTC) + timedelta(days=1)
+    return reset, max(1, math.ceil((reset - now).total_seconds()))
+
+
 async def usage_today(session: AsyncSession, ref: str) -> int:
     """Questions et analyses imputées depuis minuit UTC (fuseau de Dakar), calculées dans Postgres."""
     ql = m.query_log.c
@@ -118,7 +129,14 @@ async def reserve_quota(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": "quota:" + ref}
     )
     if await usage_today(session, ref) >= daily:
-        raise ApiError(429, "quota_exceeded", "Quota quotidien de questions atteint.")
+        retry_at, wait_s = next_quota_reset()
+        raise ApiError(
+            429,
+            "quota_exceeded",
+            "Quota quotidien de questions atteint.",
+            headers={"Retry-After": str(wait_s)},
+            retry_at=retry_at,
+        )
     await session.execute(
         insert(m.query_log).values(
             trace_id=trace_id,
@@ -149,7 +167,10 @@ class StreamLimiter:
     def acquire(self, sub: str, limit: int) -> None:
         if self._active[sub] >= limit:
             raise ApiError(
-                429, "too_many_streams", "Trop de questions en cours ; attendez la fin d'une réponse."
+                429,
+                "too_many_streams",
+                "Trop de questions en cours ; attendez la fin d'une réponse.",
+                headers={"Retry-After": str(STREAMS_RETRY_AFTER_S)},
             )
         self._active[sub] += 1
 

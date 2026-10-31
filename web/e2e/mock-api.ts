@@ -29,9 +29,9 @@ import type { AnalysisResponse, DashboardData, Tile } from '../src/features/dash
 const NN = ' ';
 
 export const ME: Record<Role, Me> = {
-  decideur: { sub: 'e2e-decideur', name: 'Awa Diallo', email: null, roles: ['decideur'], role: 'decideur', sees_sql: false },
-  analyste: { sub: 'e2e-analyste', name: 'Moussa Ndiaye', email: null, roles: ['analyste'], role: 'analyste', sees_sql: true },
-  admin: { sub: 'e2e-admin', name: 'Fatou Sow', email: null, roles: ['admin'], role: 'admin', sees_sql: true },
+  decideur: { sub: 'e2e-decideur', name: 'Awa Diallo', email: null, roles: ['decideur'], role: 'decideur', sees_sql: false, reference_date: '2026-09-30', question_max_chars: 1000 },
+  analyste: { sub: 'e2e-analyste', name: 'Moussa Ndiaye', email: null, roles: ['analyste'], role: 'analyste', sees_sql: true, reference_date: '2026-09-30', question_max_chars: 1000 },
+  admin: { sub: 'e2e-admin', name: 'Fatou Sow', email: null, roles: ['admin'], role: 'admin', sees_sql: true, reference_date: '2026-09-30', question_max_chars: 1000 },
 };
 
 /** Questions types : chacune mène à un type de réponse. */
@@ -352,6 +352,10 @@ export async function installMockApi(page: Page, role: Role = 'decideur'): Promi
       if (a === `audit/queries/${TRACE.trace_id}`) return json(route, TRACE_DETAIL);
       if (a === 'eval/runs') return json(route, { items: [{ ...RUN, report: undefined }] });
       if (a === 'eval/runs/7') return json(route, { run: RUN, by_category: { kpi: { n: 8, pass3: 7 } }, results: [] });
+      if (a === `feedback/${FEEDBACK.id}`) {
+        const { question_text: q, ...rest } = FEEDBACK;
+        return json(route, { ...rest, question: rest.consent_question ? q : null, answer: { ...kpiAnswer, trace_id: 'abc123' } });
+      }
       if (a === 'feedback') return json(route, { total: 1, page: 1, page_size: 25, items: [FEEDBACK] });
       if (a === 'kpis') return json(route, KPIS);
       if (a === 'semantic/tables') return json(route, TABLES);

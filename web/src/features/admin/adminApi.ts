@@ -2,6 +2,7 @@
 import { keepPreviousData, useQuery, type UseQueryResult } from '@tanstack/react-query';
 
 import { api, authHeaders, API_BASE, toApiError } from '@/api/client';
+import type { AssistantMessage } from '@/api/types';
 
 export type Range = '24h' | '7d' | '30d' | '90d';
 
@@ -160,6 +161,11 @@ export interface FeedbackItem {
   promoted_to_dev: boolean;
   handled_at: string | null;
   trace_id: string | null;
+}
+/** `GET /admin/feedback/{id}` : la réponse signalée avec sa chaîne de preuve ; la question seulement avec consentement. */
+export interface FeedbackDetail extends Omit<FeedbackItem, 'question_text'> {
+  question: string | null;
+  answer: AssistantMessage | null;
 }
 export interface FeedbackPage {
   total: number;

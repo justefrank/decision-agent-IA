@@ -327,6 +327,75 @@ async def test_feedback_owner_consent_and_admin_flow(ctx):
     ).status_code == 404
 
 
+async def test_feedback_detail_rights_consent_and_audit(ctx):
+    a = ctx.h("alice", DEC)
+    mid = await _answer_message_id(ctx, a)
+    f1 = (
+        await ctx.client.post("/api/feedback", json={"message_id": mid, "category": "autre"}, headers=a)
+    ).json()
+    f2 = (
+        await ctx.client.post(
+            "/api/feedback",
+            json={"message_id": mid, "category": "autre", "consent_question": True},
+            headers=a,
+        )
+    ).json()
+    an, adm = ctx.h("ana", ANA), ctx.h("root", ADM)
+    # Droits : décideur 403 (même le propriétaire), analyste et admin 200
+    assert (await ctx.client.get(f"/api/admin/feedback/{f1['id']}", headers=a)).status_code == 403
+    r1 = await ctx.client.get(f"/api/admin/feedback/{f1['id']}", headers=an)
+    assert r1.status_code == 200
+    d1 = r1.json()
+    assert d1["question"] is None and "question_text" not in d1  # pas de consentement
+    assert d1["answer"]["kind"] == "answer" and d1["answer"]["evidence"] is not None
+    assert d1["answer"]["sql"] is not None  # analyste et admin voient le SQL
+    assert "user_id" not in d1
+    r2 = await ctx.client.get(f"/api/admin/feedback/{f2['id']}", headers=adm)
+    assert r2.status_code == 200
+    assert r2.json()["question"] == "Combien de transactions en août ?"
+    # 404 : inconnu ou identifiant mal formé
+    assert (await ctx.client.get(f"/api/admin/feedback/{uuid.uuid4()}", headers=an)).status_code == 404
+    assert (await ctx.client.get("/api/admin/feedback/pas-un-uuid", headers=an)).status_code == 404
+    # Audit : une ligne par lecture, identifiant du signalement, jamais de texte
+    rows = await _owner_fetch(
+        ctx,
+        "SELECT actor_role, details FROM app.audit_access_log WHERE action = 'feedback.detail' ORDER BY id",
+    )
+    assert [r["actor_role"] for r in rows] == ["analyste", "admin"]
+    details = [json.loads(r["details"]) for r in rows]
+    assert details == [{"feedback_id": f1["id"]}, {"feedback_id": f2["id"]}]
+
+
+async def test_quota_429_has_retry_after_and_retry_at(ctx, monkeypatch):
+    from datetime import UTC, datetime
+
+    sem = ctx.app.state.runtime.semantic
+    monkeypatch.setitem(sem.config["quota"], "questions_per_user_per_day", 1)
+    h = ctx.h("alice", DEC)
+    cid = await ctx.new_conv(h)
+    assert (await ctx.ask(cid, "Volume ?", h)).status_code == 200
+    r = await ctx.ask(cid, "Volume ?", h)
+    assert r.status_code == 429
+    err = r.json()["error"]
+    assert err["code"] == "quota_exceeded" and "request_id" in err
+    wait = int(r.headers["Retry-After"])
+    assert 1 <= wait <= 86_400
+    retry_at = datetime.fromisoformat(err["retry_at"].replace("Z", "+00:00"))
+    assert retry_at.tzinfo is not None and (retry_at.hour, retry_at.minute, retry_at.second) == (0, 0, 0)
+    assert retry_at > datetime.now(UTC)
+
+
+async def test_too_many_streams_retry_after_without_retry_at(ctx):
+    limiter = ctx.app.state.stream_limiter
+    h = ctx.h("alice", DEC)
+    cid = await ctx.new_conv(h)
+    limiter.acquire("alice", 10)
+    limiter.acquire("alice", 10)
+    r = await ctx.ask(cid, "Volume ?", h)
+    assert r.status_code == 429 and r.headers["Retry-After"] == "5"
+    assert "retry_at" not in r.json()["error"]
+
+
 # --- Back-office ----------------------------------------------------------------------------
 
 
@@ -341,6 +410,7 @@ async def test_admin_routes_refused_to_decideur(ctx):
         "/api/admin/eval/runs",
         "/api/admin/eval/runs/1",
         "/api/admin/feedback",
+        f"/api/admin/feedback/{uuid.uuid4()}",
         "/api/admin/kpis",
         "/api/admin/semantic/tables",
         "/api/admin/settings",

@@ -1,13 +1,14 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 
 import { api } from '@/api/client';
 import { fmtDateTime } from '@/shared/format';
-import { announce, Button, Dialog, DialogClose, Drawer, EmptyState, Field, PageHead, scrollable, Segmented } from '@/shared/ui';
+import { announce, Button, ErrorState, Icon, Skeleton, Dialog, DialogClose, Drawer, EmptyState, Field, PageHead, scrollable, Segmented } from '@/shared/ui';
 
-import { useAdmin, type FeedbackItem, type FeedbackPage, type FeedbackStatus } from './adminApi';
+import { useAdmin, type FeedbackDetail, type FeedbackItem, type FeedbackPage, type FeedbackStatus } from './adminApi';
 import { Ledger, Line, Loaded, Mark, Pager, shortId } from './common';
+import { ReportedAnswer } from './ReportedAnswer';
 
 const PAGE_SIZE = 25;
 const CATEGORIES: Record<string, string> = {
@@ -89,10 +90,24 @@ function Detail({ item, onClose }: { item: FeedbackItem; onClose: () => void }) 
       if (v.action === 'rejeter') onClose();
     },
   });
+  // Chaque ouverture est journalisée côté serveur : pas de cache, pas de relecture au retour sur la fenêtre.
+  const detail = useQuery<FeedbackDetail>({
+    queryKey: ['admin', 'feedback-detail', item.id],
+    queryFn: () => api<FeedbackDetail>(`/admin/feedback/${item.id}`),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+  });
   const canPromote = item.status !== 'rejete' && !item.promoted_to_dev && item.consent_question && Boolean(item.question_text);
   const err = m.error instanceof Error ? m.error.message : null;
   return (
     <>
+      <p className="adm-audit-warning" role="note">
+        <Icon name="alert" size={16} />
+        <span>L’ouverture de ce détail est journalisée.</span>
+      </p>
       <Ledger label="Signalement">
         <Line label="Reçu le" value={fmtDateTime(item.ts)} />
         <Line label="Motif" value={CATEGORIES[item.category] ?? item.category} />
@@ -105,22 +120,37 @@ function Detail({ item, onClose }: { item: FeedbackItem; onClose: () => void }) 
       </section>
       <section aria-labelledby="fb-q" className="adm-block">
         <h3 id="fb-q">Question</h3>
-        {item.consent_question && item.question_text ? (
-          <p className="adm-quote">{item.question_text}</p>
+        {detail.isPending ? (
+          <Skeleton height={20} width="70%" />
+        ) : detail.isError ? (
+          <p>La question n’a pas pu être chargée.</p>
+        ) : detail.data.question ? (
+          <p className="adm-quote">{detail.data.question}</p>
         ) : (
-          <p>L’utilisateur n’a pas consenti à partager sa question : elle n’est pas affichée.</p>
+          <p>L’utilisateur n’a pas autorisé l’affichage de sa question.</p>
         )}
       </section>
       <section aria-labelledby="fb-proof" className="adm-block">
-        <h3 id="fb-proof">Réponse et chaîne de preuve</h3>
+        <h3 id="fb-proof">Réponse signalée</h3>
+        {detail.isPending ? (
+          <div className="adm-loading" aria-busy="true">
+            <span className="sr-only">Chargement de la réponse…</span>
+            <Skeleton height={22} />
+            <Skeleton height={22} width="60%" />
+          </div>
+        ) : detail.isError ? (
+          <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
+        ) : detail.data.answer ? (
+          <ReportedAnswer answer={detail.data.answer} />
+        ) : (
+          <p>La réponse n’est plus disponible.</p>
+        )}
         {item.trace_id ? (
           <p>
-            Les étapes, le SQL et les durées de cette réponse sont dans la trace <code>{shortId(item.trace_id, 12)}</code>.{' '}
+            Les étapes, les durées et les appels de cette réponse sont dans la trace <code>{shortId(item.trace_id, 12)}</code>.{' '}
             <Link to={`/admin/audit/${encodeURIComponent(item.trace_id)}`}>Ouvrir la trace</Link> (l’ouverture est journalisée).
           </p>
-        ) : (
-          <p>Aucune trace n’est rattachée à ce signalement.</p>
-        )}
+        ) : null}
       </section>
 
       <div className="adm-actions" role="group" aria-label="Traiter ce signalement">

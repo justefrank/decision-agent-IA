@@ -39,9 +39,8 @@ export function DashboardPage() {
   const region = (REGIONS as readonly string[]).includes(rawRegion) ? rawRegion : '';
 
   const dash = useDashboard(periode, region);
-  // Sans période dans l'URL, la réponse porte déjà sur le mois de référence ; sinon on le demande à part.
-  const ref = useDashboard('', '', periode !== '');
-  const refMonth = (periode === '' ? dash.data : ref.data)?.period.start.slice(0, 7) ?? null;
+  // Mois de référence des données : fourni par l'API (GET /api/me), pas déduit d'un appel sans paramètre.
+  const refMonth = me?.reference_date.slice(0, 7) ?? null;
   const shownMonth = periode || refMonth;
 
   const months = useMemo(() => {

@@ -8,13 +8,25 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly requestId?: string;
+  /** 429 : secondes à attendre (en-tête `Retry-After`). */
+  readonly retryAfterS?: number;
+  /** 429 `quota_exceeded` : instant de retour (ISO 8601 UTC). */
+  readonly retryAt?: string;
 
-  constructor(status: number, code: string, message: string, requestId?: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    requestId?: string,
+    retry: { afterS?: number; at?: string } = {},
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.retryAfterS = retry.afterS;
+    this.retryAt = retry.at;
   }
 }
 
@@ -55,7 +67,14 @@ export async function toApiError(res: Response): Promise<ApiError> {
     err?.code ?? 'error',
     err?.message ?? defaultMessage(res.status),
     err?.request_id,
+    { afterS: parseRetryAfter(res.headers.get('Retry-After')), at: err?.retry_at },
   );
+}
+
+/** `Retry-After` en secondes entières (la forme date HTTP n'est pas émise par l'API). */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value.trim())) return undefined;
+  return Number(value);
 }
 
 function defaultMessage(status: number): string {

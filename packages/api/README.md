@@ -41,10 +41,10 @@ En production, le démarrage est refusé si `LOG_PSEUDONYM_KEY` vaut la valeur p
 | `POST /conversations/{id}/messages` : SSE `step`… puis `final` (ou `error`) | tous (SQL retiré pour `decideur`) |
 | `GET /dashboard?period=AAAA-MM&region=`, `POST /dashboard/analysis` | tous (`regenerate=true` : analyste, admin) |
 | `POST /feedback` | propriétaire du message |
-| `GET /admin/overview`, `/admin/audit/queries[/{trace_id}\|/export.csv]`, `/admin/eval/runs[/{id}]`, `GET/PATCH /admin/feedback`, `/admin/kpis`, `/admin/semantic/{tables\|glossary\|examples}` | analyste, admin |
+| `GET /admin/overview`, `/admin/audit/queries[/{trace_id}\|/export.csv]`, `/admin/eval/runs[/{id}]`, `GET /admin/feedback[/{id}]`, `PATCH /admin/feedback/{id}`, `/admin/kpis`, `/admin/semantic/{tables\|glossary\|examples}` | analyste, admin |
 | `GET /admin/security`, `POST /admin/security/rights-test`, `GET /admin/settings` | admin |
 
-Erreurs : `{"error": {"code", "message", "request_id"}}`, sans détail Postgres ni trace, messages en français
+Erreurs : `{"error": {"code", "message", "request_id"}}` (429 : en-tête `Retry-After` ; `quota_exceeded` ajoute `retry_at`, ISO 8601 UTC, minuit UTC suivant ; `too_many_streams` : `Retry-After: 5`), sans détail Postgres ni trace, messages en français
 (404 et 405 compris). Corps de requête `/api/*` limité à 64 Kio par un middleware ASGI (`Content-Length` vérifié
 sans rien lire, sinon lecture bornée) : 413 `payload_too_large` avant toute lecture complète et avant
 l'authentification (Caddy applique aussi `request_body max_size 64KB`). OpenAPI déclare le schéma `bearerAuth`.
@@ -82,7 +82,8 @@ l'authentification (Caddy applique aussi `request_body max_size 64KB`). OpenAPI 
   (`{"ok": bool, "checks": [{"name", "ok", "detail"}]}`) et journalise la consultation.
 - **Audit** : pagination triée par (`ts`, `trace_id`) décroissants (départage stable) ; l'export CSV neutralise
   les formules (`=`, `+`, `-`, `@`, `|` en tête après espaces, ou tabulation / CR / LF initiaux).
-- **Signalements** : états `nouveau`, `traite`, `rejete` ; rejet avec motif obligatoire ; promotion vers le jeu de
+- **`GET /me`** expose aussi `reference_date` (REFERENCE_DATE) et `question_max_chars` (`agent.max_question_chars`).
+- **Signalements** : `GET /admin/feedback/{id}` renvoie le signalement et la réponse signalée (`answer`, chaîne de preuve, SQL pour analyste/admin) ; la question (`question`) seulement avec consentement ; chaque lecture écrit `audit_access_log` (`feedback.detail`, id du signalement). états `nouveau`, `traite`, `rejete` ; rejet avec motif obligatoire ; promotion vers le jeu de
   dev seulement (jamais le test), et seulement si l'utilisateur a consenti à joindre sa question.
 
 ## Tests

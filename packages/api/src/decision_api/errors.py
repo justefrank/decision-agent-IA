@@ -7,6 +7,7 @@ Aucune exception Postgres ni trace Python n'est renvoyée au client : elles sont
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 
@@ -58,11 +59,13 @@ class ApiError(Exception):
         code: str | None = None,
         message: str | None = None,
         headers: dict[str, str] | None = None,
+        retry_at: datetime | None = None,
     ) -> None:
         self.status = status
         self.code = code or _DEFAULT_CODES.get(status, "error")
         self.message = message or _DEFAULT_MESSAGES.get(status, "Requête refusée.")
         self.headers = headers
+        self.retry_at = retry_at  # champ optionnel du corps d'erreur (ISO 8601 UTC)
         super().__init__(self.message)
 
 
@@ -89,7 +92,10 @@ def _resp(
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
-        return _resp(request, exc.status, exc.code, exc.message, exc.headers)
+        extra: dict[str, Any] = {}
+        if exc.retry_at is not None:
+            extra["retry_at"] = exc.retry_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _resp(request, exc.status, exc.code, exc.message, exc.headers, **extra)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
