@@ -25,6 +25,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# Hash figé du jeu de test d'évaluation : à versionner (le nom MANIFEST est ignoré par le modèle Python ci-dessus)
+!eval/MANIFEST
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
