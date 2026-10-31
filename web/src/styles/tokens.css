@@ -1,0 +1,115 @@
+/* Jetons du design system (docs/DESIGN_SYSTEM.md §2), seule source des couleurs de l'interface.
+   Règles : jamais de couleur en dur dans un composant ; `line` pour les séparateurs, `line2` pour toute
+   bordure de composant interactif ; texte sur jaune ou ciel toujours en marine (#0B2545). */
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource-variable/instrument-sans';
+@import '@fontsource-variable/jetbrains-mono';
+
+:root {
+  color-scheme: light;
+  --ground: #f2f7fc;
+  --card: #ffffff;
+  --panel: #e4eef8;
+  --line: #cfddec;
+  --line2: #6f8caa;
+  --ink: #0b2545;
+  --soft: #41607f;
+  --brand: #2d5ece;
+  --brand-ink: #eaf4fd;
+  --brand-soft: #e3eeff;
+  --primary: #2a5fd4;
+  --primary-ink: #ffffff;
+  --sky: #1dc8fe;
+  --saff: #ffc83d;
+  --pos: #0c7356;
+  --neg: #b83a55;
+  --chip: #e1ebfd;
+  --c1: #2f6fed;
+  --c2: #ffc83d;
+  --c3: #0e8c86;
+  --c4: #c2415d;
+  --on-signal: #0b2545; /* texte sur jaune ou ciel, dans les deux thèmes */
+  --code-bg: #071a33;
+  --code-ink: #eaf4fd;
+  --shadow: 0 1px 0 #fff inset, 0 24px 48px -32px rgb(11 37 69 / 0.35);
+
+  --font-display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
+  --font-ui: 'Instrument Sans Variable', 'Instrument Sans', system-ui, sans-serif;
+  --font-code: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Échelle typographique (rapport 1,2 sur une base de 16 px) */
+  --t-xs: 0.8125rem;
+  --t-sm: 0.9375rem;
+  --t-md: 1rem;
+  --t-lg: 1.2rem;
+  --t-xl: 1.44rem;
+  --t-2xl: 2.074rem;
+  --t-3xl: 2.986rem;
+  --t-figure: clamp(2.75rem, 6vw, 4.75rem);
+
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 22px;
+  --gap-1: 0.5rem;
+  --gap-2: 0.75rem;
+  --gap-3: 1.125rem;
+  --gap-4: 1.75rem;
+  --gap-5: 2.75rem;
+  --rail: 15.5rem;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --ground: #071a33;
+  --card: #0e2a4d;
+  --panel: #0a2140;
+  --line: #1f3f66;
+  --line2: #6e93bd;
+  --ink: #eaf4fd;
+  --soft: #9fc0e0;
+  --brand: #17458f;
+  --brand-ink: #eaf4fd;
+  --brand-soft: #b9d0fa;
+  --primary: #6fa3ff;
+  --primary-ink: #071a33;
+  --sky: #3dd3ff;
+  --saff: #ffd25e;
+  --pos: #7fe0bc;
+  --neg: #ff8fa5;
+  --chip: #12365f;
+  --c1: #6fa3ff;
+  --c2: #ffd25e;
+  --c3: #4fd1c5;
+  --c4: #ff8fa5;
+  --code-bg: #04122a;
+  --shadow: 0 24px 48px -32px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --ground: #071a33;
+    --card: #0e2a4d;
+    --panel: #0a2140;
+    --line: #1f3f66;
+    --line2: #6e93bd;
+    --ink: #eaf4fd;
+    --soft: #9fc0e0;
+    --brand: #17458f;
+    --brand-ink: #eaf4fd;
+    --brand-soft: #b9d0fa;
+    --primary: #6fa3ff;
+    --primary-ink: #071a33;
+    --sky: #3dd3ff;
+    --saff: #ffd25e;
+    --pos: #7fe0bc;
+    --neg: #ff8fa5;
+    --chip: #12365f;
+    --c1: #6fa3ff;
+    --c2: #ffd25e;
+    --c3: #4fd1c5;
+    --c4: #ff8fa5;
+    --code-bg: #04122a;
+    --shadow: 0 24px 48px -32px rgb(0 0 0 / 0.6);
+  }
+}

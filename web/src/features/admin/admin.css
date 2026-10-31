@@ -1,0 +1,442 @@
+/* Back-office : le relevé. Lignes à pointillés (libellé ... valeur), un seul tracé par idée, aucune carte identique. */
+.adm-page {
+  display: grid;
+  gap: var(--gap-4);
+  align-content: start;
+  max-width: 72rem;
+}
+.adm-page > .ui-page-head {
+  margin-bottom: 0;
+}
+.adm-loading {
+  display: grid;
+  gap: 0.9rem;
+  max-width: 40rem;
+}
+.adm-section {
+  display: grid;
+  gap: var(--gap-2);
+  align-content: start;
+  min-width: 0;
+}
+.adm-section > h2 {
+  font-size: var(--t-xl);
+}
+.adm-note {
+  color: var(--soft);
+  font-size: var(--t-sm);
+  max-width: 62ch;
+}
+.adm-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--gap-4) var(--gap-5);
+}
+
+/* Relevé : libellé, pointillés, valeur. */
+.adm-ledger {
+  display: grid;
+  margin: 0;
+  max-width: 44rem;
+}
+.adm-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+  min-height: 2.75rem;
+}
+.adm-line dt {
+  color: var(--ink);
+  flex: 0 1 auto;
+  display: grid;
+}
+.adm-line::after {
+  content: none;
+}
+.adm-line dd {
+  margin: 0 0 0 auto;
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 1 60%;
+}
+.adm-hint {
+  color: var(--soft);
+  font-size: var(--t-xs);
+  font-weight: 400;
+}
+
+/* Délais : barre avec repère de cible. */
+.adm-lats {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--gap-3);
+  max-width: 44rem;
+}
+.adm-lat-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  margin-bottom: 0.4rem;
+}
+.adm-lat-head strong {
+  font-family: var(--font-display);
+  font-size: var(--t-xl);
+}
+.adm-bar {
+  position: relative;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+}
+.adm-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 6px;
+  background: var(--pos);
+}
+.adm-bar-fill[data-over='true'] {
+  background: var(--neg);
+}
+.adm-bar-target {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 3px;
+  margin-left: -1px;
+  background: var(--ink);
+  border-radius: 2px;
+}
+
+/* Reçu d'évaluation : le chiffre clé, souligné du trait jaune, puis l'intervalle. */
+.adm-receipt {
+  display: grid;
+  gap: var(--gap-2);
+  padding: var(--gap-4);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  max-width: 44rem;
+}
+.adm-receipt h2 {
+  font-size: var(--t-lg);
+  color: var(--soft);
+  font-weight: 500;
+}
+.adm-figure {
+  font-family: var(--font-display);
+  font-size: var(--t-figure);
+  line-height: 1;
+  font-weight: 700;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+}
+.adm-figure::after {
+  content: none;
+}
+.adm-figure > span:not(.adm-key) {
+  font-family: var(--font-ui);
+  font-size: var(--t-md);
+  font-weight: 500;
+  color: var(--soft);
+}
+.adm-interval {
+  position: relative;
+  height: 14px;
+  margin: 0.6rem 0 1.6rem;
+  border-radius: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+}
+.adm-interval-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--chip);
+  border-left: 3px solid var(--c1);
+  border-right: 3px solid var(--c1);
+  box-sizing: border-box;
+}
+.adm-interval-dot {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: var(--c1);
+  border: 2px solid var(--card);
+}
+.adm-interval-target {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 3px;
+  background: var(--ink);
+  border-radius: 2px;
+}
+.adm-interval-tl {
+  position: absolute;
+  top: 22px;
+  transform: translateX(-50%);
+  font-size: var(--t-xs);
+  color: var(--soft);
+  white-space: nowrap;
+}
+.adm-interval-txt {
+  color: var(--soft);
+  font-size: var(--t-sm);
+}
+.adm-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 0.8rem;
+}
+.adm-verdict span:last-child {
+  flex: 1 1 18rem;
+  max-width: 60ch;
+}
+/* Trait jaune sous le chiffre clé : l'unique accent, réservé au score. */
+.adm-key {
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--saff);
+  text-decoration-thickness: 6px;
+  text-underline-offset: 8px;
+}
+
+/* Avertissement et notes de procédure. */
+.adm-warn {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line2);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  font-size: var(--t-sm);
+  max-width: 62ch;
+}
+.adm-warn svg {
+  flex: none;
+  margin-top: 2px;
+}
+.adm-procedure {
+  border-left: 4px solid var(--line2);
+  padding: 0.4rem 0 0.4rem 1rem;
+  display: grid;
+  gap: 0.3rem;
+  max-width: 62ch;
+}
+.adm-ok {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Filtres du journal. */
+.adm-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: var(--gap-2);
+  align-items: end;
+}
+.adm-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.adm-link {
+  min-height: 44px;
+  padding: 0 0.25rem;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+.adm-clip {
+  max-width: 24rem;
+  overflow-wrap: anywhere;
+}
+.adm-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--t-sm);
+}
+.adm-pager > div {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Tiroirs : étapes, blocs, actions. */
+.adm-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--gap-3);
+}
+.adm-step {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: var(--gap-2);
+  border-top: 2px solid var(--line);
+}
+.adm-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+.adm-block {
+  display: grid;
+  gap: 0.3rem;
+}
+.adm-block h3 {
+  font-size: var(--t-md);
+}
+.adm-quote {
+  padding-left: 0.9rem;
+  border-left: 3px solid var(--line2);
+}
+.adm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.adm-form {
+  display: grid;
+  gap: var(--gap-2);
+}
+.adm-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.adm-checks li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-sm);
+}
+.adm-checks li > span:last-child {
+  overflow-wrap: anywhere;
+}
+.adm-plain {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.adm-mini {
+  display: block;
+  width: 8rem;
+  height: 10px;
+}
+.adm-mini > span {
+  display: block;
+  height: 100%;
+  background: var(--chip);
+  border: 1px solid var(--line2);
+  box-sizing: border-box;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.adm-mini i {
+  display: block;
+  height: 100%;
+  background: var(--neg);
+}
+
+/* Catalogue et couche sémantique. */
+.adm-search {
+  max-width: 24rem;
+}
+.adm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-3);
+  align-items: end;
+}
+.adm-defs {
+  display: grid;
+  gap: var(--gap-4);
+}
+.adm-def {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: var(--gap-3);
+  border-top: 2px solid var(--line);
+  min-width: 0;
+  max-width: 52rem;
+}
+.adm-def h3 {
+  font-size: var(--t-lg);
+}
+.adm-id {
+  color: var(--soft);
+  font-size: var(--t-sm);
+}
+.adm-glossary {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  max-width: 52rem;
+}
+.adm-glossary > div {
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.adm-glossary dt {
+  font-weight: 700;
+}
+.adm-glossary dd {
+  margin: 0.2rem 0 0;
+}
+
+@media (max-width: 40rem) {
+  .adm-line {
+    flex-wrap: wrap;
+  }
+  .adm-line dd {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    text-align: left;
+    margin-left: 0;
+  }
+}
+
+.adm-details > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--primary);
+  font-size: var(--t-sm);
+}
+
+.adm-page .ui-table td {
+  vertical-align: middle;
+}

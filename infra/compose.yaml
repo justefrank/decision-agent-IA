@@ -188,7 +188,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # SPA statique compilée (WEB_DIST, défaut web/dist). Sans index.html, Caddy sert la page
-      # d'attente de web-fallback/ (l'interface est à migrer depuis frontend/, voir README).
+      # d'attente de web-fallback/ (construite par `make web-build` dans web/dist, voir README).
       - ${WEB_DIST:-../web/dist}:/srv/web:ro
       - ./web-fallback:/srv/fallback:ro
       - caddy_data:/data

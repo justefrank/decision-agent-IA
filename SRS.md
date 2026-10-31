@@ -46,7 +46,7 @@ Question de recherche du mémoire : **quelle justesse et quelle sûreté atteint
 | Cible Snowflake (second target dbt) | Could, P5 ; la portabilité concerne dbt, pas le SQL ni les prompts |
 | Éditeurs du back-office v4 (KPI, sémantique, paramètres, utilisateurs) | P5 si le temps le permet ; remplacés par la PR Git et la console Keycloak |
 | Thème Keycloakify complet (7 pages) | Remplacé par connexion + OTP ; reste en thème de base |
-| Écrans mobiles dédiés (M1-M3), thème sombre dédié (U13, U18) | Remplacés par le responsive ; jetons sombres prévus, écrans en option |
+| Écrans mobiles dédiés (M1-M3) | Remplacés par le responsive (une seule interface de 320 à 1440 px) ; le thème sombre est livré |
 | Courtage d'un fournisseur d'identité externe (« SSO » d'entreprise) | Hors MVP (section 15) |
 
 ### Hypothèses
@@ -106,7 +106,7 @@ Changements par rapport à la v4 : RF9, RF12, RF18 passent en lecture + PR Git ;
 | ENF9 | Coût | Consommation maîtrisée | 1 000 lignes max renvoyées, **50 lignes max envoyées au modèle** ; plan `EXPLAIN` borné ; quota de 200 questions par jour et 2 flux simultanés par utilisateur ; plafond de 0,10 $ par question (à recalibrer après P1) ; workspaces fournisseur séparés pour la production et l'évaluation |
 | ENF10 | Authentification | Session sûre | Jeton d'accès de 5 min en mémoire, **renouvelé en silence** ; avertissement avant la fin de la **session SSO** Keycloak (inactivité ou durée max), avec prolongation (WCAG 2.2.1) ; détection de force brute Keycloak (verrouillage temporaire, messages neutres) ; MFA obligatoire pour analyste et admin ; aucun minuteur automatique sans moyen de l'arrêter |
 | ENF11 | Gouvernance | Tout changement de configuration est relu | KPI, couche sémantique et paramètres modifiés **par PR Git** : relecteur différent de l'auteur, branche protégée, CI verte (validation des YAML, anti-fuite exemples/test, tests unitaires des KPI) ; l'API recalcule `semantic_version` au démarrage ; aucun changement direct en production |
-| ENF12 | Ergonomie | Interface claire en français, responsive | Question → graphique en ≤ 3 clics ; utilisable de 320 à 1440 px ; **22 écrans de référence MVP** couverts ([FEATURES_RESOURCES §2](docs/FEATURES_RESOURCES.md#2-écrans-mvp-22)) |
+| ENF12 | Ergonomie | Interface claire en français, responsive | Question → graphique en ≤ 3 clics ; utilisable de 320 à 1440 px ; les écrans de l'interface réelle couverts ([DESIGN_SYSTEM §5](docs/DESIGN_SYSTEM.md#5-écrans-routes)) ; la maquette de 45 écrans n'est plus la référence |
 
 ## 6. Architecture
 
@@ -299,5 +299,5 @@ Total MVP : environ 60-75 jours-personne hors rédaction.
 | Q-d | Mémoïsation de l'analyse du tableau de bord par `data_hash` | Non au MVP (une ligne `analysis` par génération) ; à réévaluer si la latence de RF4 gêne | P3 |
 | Q-e | Juge LLM pour 2 attributs textuels (pertinence, causalité) | Optionnel, après calibration (≥ 30 annotations, kappa ≥ 0,7), jamais pour O1 | P3 |
 | Q-f | SSO d'entreprise par courtage d'un fournisseur externe | Hors MVP ; Keycloak seul | — |
-| Q-g | Nom du dossier de la SPA : migrer `frontend/` (Next.js) vers Vite sous `web/` ou garder `frontend/` | Vite (bulletproof-react `react-vite`) ; nom à fixer au début de P2 | Début de P2 |
+| Q-g | Nom du dossier de la SPA | **Tranchée** : SPA Vite sous `web/` ; `frontend/` (Next.js) supprimé | — |
 | Q-h | SMTP de production (Mailpit en développement) | Hors MVP ; documenté | P4 |

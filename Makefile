@@ -40,7 +40,7 @@ COMPOSE := docker compose -f infra/compose.yaml
 
 .PHONY: help sync db-up db-down seed generate dbt-build dbt-run rights-test migrate api eval test \
         lint secrets compose-up compose-down init reset dev-token api-dev create-admin create-user \
-        up dev-up down logs ps restart dc-build dc-init dc-seed dc-rights-test dc-migrate dc-admin dc-user \
+        web-install web-dev web-dev-dc web-build web-check web-e2e dc-web-build up dev-up down logs ps restart dc-build dc-init dc-seed dc-rights-test dc-migrate dc-admin dc-user \
         dc-token dc-eval dc-shell dc-reset \
         purge-logs
 
@@ -159,10 +159,11 @@ ifeq ($(DEV),1)
 DC_FILES += -f infra/compose.dev.yaml
 endif
 DC := HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose $(DC_FILES) --profile dev
-DC_TOOLS := $(DC) --profile tools run --rm tools
+DC_TOOLS := $(DC) --profile tools run --rm -T tools   # -T : sans terminal (appelable par un script)
 
 up: secrets ## Conteneurs : lance la pile (Postgres, Keycloak, migrations, API, Caddy, Mailpit)
 	@mkdir -p var/reports var/dev-auth
+	@test -f web/dist/index.html || echo "Interface non construite : make dc-web-build (ou make web-build) puis make restart S=proxy"
 	$(DC) up -d --build
 
 dev-up: ## Conteneurs, développement : API sur 127.0.0.1:8000 avec jetons locaux et Swagger
@@ -217,8 +218,33 @@ dc-eval: ## Conteneurs : évaluation (clé dans infra/secrets/anthropic_api_key.
 	$(DC_TOOLS) make eval SPLIT=$(SPLIT) PASSES=$(or $(PASSES),3)
 
 dc-shell: ## Conteneurs : shell dans le conteneur outils (make, uv, dbt, psql)
-	$(DC_TOOLS) bash
+	$(DC) --profile tools run --rm tools bash
 
 dc-reset: ## Conteneurs : supprime TOUTES les données (volumes) puis relance dc-init
 	$(DC) --profile tools down -v
 	@$(MAKE) --no-print-directory dc-init
+
+# --- Interface web (web/ : Vite + React + TypeScript) ---------------------------------------------
+NODE_IMAGE ?= node:22.22-bookworm-slim
+
+web-install: ## Interface : installe les dépendances (npm ci)
+	cd web && npm ci --no-audit --no-fund
+
+web-dev: ## Interface : serveur de développement http://localhost:5173 (jetons locaux ; API : make api-dev ou dev-up)
+	cd web && npm run dev
+
+web-dev-dc: ## Interface : serveur de développement avec les jetons et l'API des conteneurs (make dev-up)
+	cd web && DEV_TOKEN_CMD="make -s dc-token ROLE={role}" npm run dev
+
+web-check: ## Interface : types, lint et tests
+	cd web && npm run typecheck && npm run lint && npm run test
+
+web-e2e: ## Interface : tests de bout en bout et accessibilité (Playwright, API simulée, sans backend)
+	cd web && npx playwright test
+
+web-build: ## Interface : construit web/dist (servi par Caddy, make up)
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+dc-web-build: ## Interface en conteneur : construit web/dist avec Node dans Docker (sans Node sur l'hôte)
+	docker run --rm -u $$(id -u):$$(id -g) -e HOME=/tmp -v "$(CURDIR)/web:/app" -w /app $(NODE_IMAGE) \
+	  sh -c "npm ci --no-audit --no-fund && npm run build"
