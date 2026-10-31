@@ -17,7 +17,7 @@ Sources de vérité (le texte les résume, il ne les recopie pas) :
 
 | N° | Décision | Remplace |
 |---|---|---|
-| D1 | SPA **Vite + React + TypeScript** (bulletproof-react `react-vite`) ; reprise de `components/ui`, Radix, react-query, MSW, Storybook a11y, DOMPurify. Le dossier `frontend/` (Next.js) sera migré en P2 | Squelette Next.js |
+| D1 | SPA **Vite + React + TypeScript** (bulletproof-react `react-vite`) ; dans `web/` ; Radix, TanStack Query, MSW, axe-core. L'ancien `frontend/` (Next.js) est supprimé | Squelette Next.js |
 | D2 | **API FastAPI minimale** : sans utilisateurs locaux, Redis, cache, Taskiq ni SQLAdmin ; quota calculé dans Postgres ; migrations Alembic par `app_owner` | Squelette Fastro (retiré) |
 | D3 | SDK MCP **v2** (`MCPServer`, `mcp>=2.3,<3`) en stdio ; un sous-processus par worker ; seul détenteur du DSN `agent_ro` ; annulation `notifications/cancelled` → `pg_cancel_backend` | S3 précisé |
 | D4 | Flux : **POST + format SSE** (`fastapi.sse`, FastAPI ≥ 0.135) lu par `fetch` ; événements `step`, `final`, `error` ; ping 15 s | S6 précisé |
@@ -63,7 +63,7 @@ Un serveur Postgres, deux bases, cinq rôles de connexion. Un monolithe FastAPI 
 | Agent | Boucle d'outils, registre de faits, validateur, formateur, analyse du tableau de bord | SDK `anthropic>=2.3,<3` | `packages/agent` (`decision_agent`) | RF1-RF3, RF5, RF14, RF17 |
 | API | JWT, conversations, flux SSE, quota, écriture de `query_log`, filtrage par rôle, back-office en lecture | FastAPI ≥ 0.135, SQLAlchemy async, asyncpg, Alembic | `packages/api` (`decision_api`) | RF6, RF8, RF10, RF13, RF19, RF20, ENF5 |
 | Évaluation | Exécuteur, comparateur, statistiques, rapports | Python | `packages/eval` (`decision_eval`) + `eval/` (jeux) | O1, O3 |
-| Interface | Chat, graphiques, historique, tableau de bord, back-office | React, Vite, TypeScript | `frontend/` (à migrer, D1) | RF3, RF4, ENF7, ENF12 |
+| Interface | Chat, graphiques, historique, tableau de bord, back-office | React, Vite, TypeScript | `web/` (`make web-check`) | RF3, RF4, ENF7, ENF12 |
 | Identité | Utilisateurs, rôles, MFA, force brute ; thème de connexion et d'OTP | Keycloak 26.x, Keycloakify | `infra/keycloak/` | RF11, RF15, RF16, ENF10 |
 | Proxy | TLS, routage de même origine, en-têtes de sécurité | Caddy 2 | `infra/Caddyfile` | ENF4, ENF10 |
 
@@ -348,10 +348,10 @@ decision-agent-IA/
 ├── eval/              # jeux : test.yaml (hash figé), dev, intent, followup, security, regression, analysis
 ├── infra/             # compose.yaml, Caddyfile, postgres/init/, keycloak/ (realm sans secret, thème)
 ├── scripts/           # dev_pg.sh (Postgres local jetable)
-└── frontend/          # SPA ; migration Next.js → Vite prévue en P2 (D1, SRS Q-g)
+└── web/               # SPA Vite + React (conversation, indicateurs, back-office en lecture)
 ```
 
-Le squelette `api/` (Fastro) est retiré. Le squelette `frontend/` (Next.js, ne compile pas) reste en attendant sa migration.
+Les squelettes `api/` (Fastro) et `frontend/` (Next.js) sont retirés.
 
 ## 10. Décisions (ADR)
 
