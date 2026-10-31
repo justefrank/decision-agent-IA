@@ -95,7 +95,7 @@ relevé : chaque réponse est un reçu avec son chiffre clé et sa chaîne de pr
 | Développement en conteneurs | `make dev-up`, puis `make web-dev-dc` → http://localhost:5173 | Idem, jetons signés dans le conteneur outils |
 | Pile complète (Keycloak) | `make dc-web-build` (ou `make web-build` avec Node 22), puis `make up` → https://localhost | Keycloak : Authorization Code + PKCE, jeton en mémoire, renouvellement silencieux, OTP pour analyste et admin |
 
-Avant un commit : `make web-check` (types, lint, tests). Les types de l'API sont générés depuis son
+Avant un commit : `make web-check` (types, lint, tests). `make web-e2e` lance 180 tests de bout en bout et d'accessibilité (Playwright et axe-core, WCAG 2.2 AA, thèmes clair et sombre, 1280 et 390 px) avec l'API simulée : ni backend ni Keycloak nécessaires. Les types de l'API sont générés depuis son
 OpenAPI et les contrats Python : `cd web && npm run api-types`. Les polices sont installées en local
 (CSP stricte, aucun appel à un CDN).
 

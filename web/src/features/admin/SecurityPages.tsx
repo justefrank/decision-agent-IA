@@ -3,7 +3,7 @@ import { useState } from 'react';
 
 import { api } from '@/api/client';
 import { fmtDateTime, fmtInt } from '@/shared/format';
-import { announce, Button, PageHead, Segmented } from '@/shared/ui';
+import { announce, Button, PageHead, scrollable, Segmented } from '@/shared/ui';
 
 import { useAdmin, type Range, type RightsReport, type RightsTestResult, type Security, type Settings } from './adminApi';
 import { Ledger, Line, Loaded, Mark, Section } from './common';
@@ -139,7 +139,7 @@ function SecurityBody({ d, range }: { d: Security; range: Range }) {
             <Mark kind="ok">Aucun blocage</Mark> Aucune requête n’a été refusée sur cette période.
           </p>
         ) : (
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable('Blocages par motif')}>
             <table className="ui-table">
               <caption className="sr-only">Blocages par motif</caption>
               <thead>
@@ -162,7 +162,7 @@ function SecurityBody({ d, range }: { d: Security; range: Range }) {
           </div>
         )}
         {d.guard_blocks_by_day.length > 0 ? (
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable('Appels d’outils de données et blocages par jour')}>
             <table className="ui-table">
               <caption className="sr-only">Appels d’outils de données et blocages par jour</caption>
               <thead>
@@ -207,7 +207,7 @@ function SecurityBody({ d, range }: { d: Security; range: Range }) {
         {d.recent_audit_access.length === 0 ? (
           <p>Aucun accès enregistré.</p>
         ) : (
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable('Accès récents au journal d’audit')}>
             <table className="ui-table">
               <caption className="sr-only">Accès récents au journal d’audit</caption>
               <thead>

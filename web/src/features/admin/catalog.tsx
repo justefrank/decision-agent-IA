@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { fmtInt } from '@/shared/format';
-import { EmptyState, Field, PageHead, Segmented } from '@/shared/ui';
+import { EmptyState, Field, PageHead, scrollable, Segmented } from '@/shared/ui';
 
 import {
   useAdmin,
@@ -77,7 +77,7 @@ function MetricCard({ id, m }: { id: string; m: Metric }) {
         {m.default_region_kind ? <Line label="Région par défaut" value={m.default_region_kind} /> : null}
         {m.default_period ? <Line label="Période par défaut" value={m.default_period} /> : null}
       </Ledger>
-      <pre className="ui-code" aria-label={`Définition SQL de ${m.label}`}>
+      <pre className="ui-code" {...scrollable(`Définition SQL de ${m.label}`)}>
         {m.sql}
       </pre>
     </article>
@@ -109,7 +109,7 @@ function KpiBody({ d }: { d: KpiCatalog }) {
       ) : null}
       {dims.length ? (
         <Section id="axes" title={`Axes d’analyse (${dims.length})`}>
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable('Axes d’analyse disponibles')}>
             <table className="ui-table">
               <caption className="sr-only">Axes d’analyse disponibles</caption>
               <thead>
@@ -176,7 +176,7 @@ function TablesView({ c, q }: { c: TablesContent; q: string }) {
           </h3>
           <p>{t.description}</p>
           {t.grain ? <p className="adm-note">Une ligne par : {t.grain}</p> : null}
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable(`Colonnes de ${name}`)}>
             <table className="ui-table">
               <caption className="sr-only">Colonnes de {name}</caption>
               <thead>
@@ -239,7 +239,7 @@ function ExamplesView({ c, q }: { c: ExamplesContent; q: string }) {
           </p>
           {e.piege ? <p>Piège : {e.piege.trim()}</p> : null}
           {e.appel ? (
-            <pre className="ui-code" aria-label={`Appel attendu pour ${e.id}`}>
+            <pre className="ui-code" {...scrollable(`Appel attendu pour ${e.id}`)}>
               {e.appel.sql ?? JSON.stringify(e.appel, null, 2)}
             </pre>
           ) : null}

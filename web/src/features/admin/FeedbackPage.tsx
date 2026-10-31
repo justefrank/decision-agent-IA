@@ -4,7 +4,7 @@ import { Link } from 'react-router';
 
 import { api } from '@/api/client';
 import { fmtDateTime } from '@/shared/format';
-import { announce, Button, Dialog, DialogClose, Drawer, EmptyState, Field, PageHead, Segmented } from '@/shared/ui';
+import { announce, Button, Dialog, DialogClose, Drawer, EmptyState, Field, PageHead, scrollable, Segmented } from '@/shared/ui';
 
 import { useAdmin, type FeedbackItem, type FeedbackPage, type FeedbackStatus } from './adminApi';
 import { Ledger, Line, Loaded, Mark, Pager, shortId } from './common';
@@ -205,7 +205,7 @@ export function AdminFeedbackPage() {
             </EmptyState>
           ) : (
             <>
-              <div className="ui-table-wrap">
+              <div className="ui-table-wrap" {...scrollable('Signalements, nouveaux d’abord')}>
                 <table className="ui-table">
                   <caption className="sr-only">Signalements, nouveaux d’abord</caption>
                   <thead>

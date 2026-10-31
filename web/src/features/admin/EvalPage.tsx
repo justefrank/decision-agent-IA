@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 
 import { fmtDateTime, fmtInt, fmtMs } from '@/shared/format';
-import { EmptyState, PageHead, Segmented } from '@/shared/ui';
+import { EmptyState, PageHead, scrollable, Segmented } from '@/shared/ui';
 
 import { useAdmin, type CategoryCount, type EvalDetail, type EvalReport, type EvalRunRow } from './adminApi';
 import { Ledger, Line, Loaded, Mark, Section, pct, shortId, usd } from './common';
@@ -87,7 +87,7 @@ function RunsList() {
             </EmptyState>
           ) : (
             <>
-              <div className="ui-table-wrap">
+              <div className="ui-table-wrap" {...scrollable('Exécutions d’évaluation, de la plus récente à la plus ancienne')}>
                 <table className="ui-table">
                   <caption className="sr-only">Exécutions d’évaluation, de la plus récente à la plus ancienne</caption>
                   <thead>
@@ -148,7 +148,7 @@ function Ablations({ items }: { items: EvalRunRow[] }) {
       title="Ablations"
       note="On retire un composant à la fois pour mesurer ce qu’il apporte. Dernière exécution de chaque variante ; sous 70 questions, la comparaison reste descriptive."
     >
-      <div className="ui-table-wrap">
+      <div className="ui-table-wrap" {...scrollable('Dernier score de chaque variante')}>
         <table className="ui-table">
           <caption className="sr-only">Dernier score de chaque variante</caption>
           <thead>
@@ -192,7 +192,7 @@ function Categories({ cats, isTest }: { cats: Record<string, CategoryCount>; isT
       title="Par catégorie"
       note={`Comptes bruts. Sous ${MIN_CATEGORY} questions, une catégorie ne permet aucune conclusion.${isTest ? ' Pour le jeu de test, les échecs ne sont analysés que par catégorie.' : ''}`}
     >
-      <div className="ui-table-wrap">
+      <div className="ui-table-wrap" {...scrollable('Résultats par catégorie de questions')}>
         <table className="ui-table">
           <caption className="sr-only">Résultats par catégorie de questions</caption>
           <thead>
@@ -334,7 +334,7 @@ function Body({ d }: { d: EvalDetail }) {
         ) : failing.length === 0 ? (
           <p>Aucune question n’a échoué.</p>
         ) : (
-          <div className="ui-table-wrap">
+          <div className="ui-table-wrap" {...scrollable('Questions non réussies 3 fois sur 3')}>
             <table className="ui-table">
               <caption className="sr-only">Questions non réussies 3 fois sur 3</caption>
               <thead>

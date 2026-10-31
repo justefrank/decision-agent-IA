@@ -260,6 +260,8 @@
 
 .ui-segmented {
   display: inline-flex;
+  flex-wrap: wrap; /* 4 choix (Signalements) dépassent 320 px sinon */
+  max-width: 100%;
   padding: 3px;
   gap: 2px;
   border-radius: var(--r-md);

@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router';
 
 import { api } from '@/api/client';
 import { fmtDateTime, fmtInt, fmtMs } from '@/shared/format';
-import { announce, Button, Drawer, EmptyState, Field, Icon, PageHead } from '@/shared/ui';
+import { announce, Button, Drawer, EmptyState, Field, Icon, PageHead, scrollable } from '@/shared/ui';
 
 import {
   downloadAuthenticated,
@@ -87,7 +87,7 @@ function Step({ s }: { s: TraceStep }) {
       {s.sql ? (
         <>
           <p className="adm-note">SQL exécuté, après réécriture par le garde</p>
-          <pre className="ui-code">
+          <pre className="ui-code" {...scrollable('SQL exécuté')}>
             {s.sql}
           </pre>
         </>
@@ -254,7 +254,7 @@ export function AdminAuditPage() {
             </EmptyState>
           ) : (
             <>
-              <div className="ui-table-wrap">
+              <div className="ui-table-wrap" {...scrollable('Appels de l’agent, du plus récent au plus ancien')}>
                 <table className="ui-table">
                   <caption className="sr-only">Appels de l’agent, du plus récent au plus ancien</caption>
                   <thead>

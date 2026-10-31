@@ -3,6 +3,7 @@ import * as RDialog from '@radix-ui/react-dialog';
 import {
   forwardRef,
   useId,
+  useRef,
   type ButtonHTMLAttributes,
   type ReactElement,
   type ReactNode,
@@ -108,6 +109,33 @@ export function PageHead({
   );
 }
 
+/**
+ * Radix ne rend le focus qu'à un `Dialog.Trigger` ; nos panneaux sont pilotés par un état, sans déclencheur
+ * Radix. On retient donc l'élément qui avait le focus à l'ouverture et on le lui rend à la fermeture (WCAG 2.4.3),
+ * ou, s'il a disparu entre-temps, au contenu principal.
+ */
+function useReturnFocus() {
+  const from = useRef<HTMLElement | null>(null);
+  return {
+    onOpenAutoFocus: () => {
+      from.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    },
+    onCloseAutoFocus: (e: Event) => {
+      e.preventDefault();
+      const el = from.current?.isConnected ? from.current : document.getElementById('contenu');
+      el?.focus();
+      from.current = null;
+    },
+  };
+}
+
+/**
+ * Attributs d'une zone qui défile (grand tableau, bloc de code) : focalisable pour que le défilement reste
+ * possible au clavier (WCAG 2.1.1, règle axe `scrollable-region-focusable`), nommée pour être annoncée.
+ * À étaler : `<div className="ui-table-wrap" {...scrollable('Signalements')}>`.
+ */
+export const scrollable = (label: string) => ({ role: 'region', tabIndex: 0, 'aria-label': label }) as const;
+
 /** Panneau latéral (détail d'un élément). Focus piégé, Échap ferme, focus rendu au déclencheur. */
 export function Drawer({
   open,
@@ -122,11 +150,12 @@ export function Drawer({
   description?: string;
   children: ReactNode;
 }) {
+  const focus = useReturnFocus();
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
         <RDialog.Overlay className="ui-overlay" />
-        <RDialog.Content className="ui-drawer" aria-describedby={description ? undefined : undefined}>
+        <RDialog.Content className="ui-drawer" {...focus} aria-describedby={description ? undefined : undefined}>
           <div className="ui-drawer-head">
             <div>
               <RDialog.Title asChild>
@@ -162,11 +191,12 @@ export function Dialog({
   description?: string;
   children: ReactNode;
 }) {
+  const focus = useReturnFocus();
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
         <RDialog.Overlay className="ui-overlay" />
-        <RDialog.Content className="ui-dialog">
+        <RDialog.Content className="ui-dialog" {...focus}>
           <RDialog.Title asChild>
             <h2>{title}</h2>
           </RDialog.Title>
